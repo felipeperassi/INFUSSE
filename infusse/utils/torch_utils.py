@@ -16,6 +16,16 @@ from infusse.config import DATA_DIR
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def max_chain_identity(X, C, idx_a, idx_b, n_chain_types=3):
+    identities = []
+    for k in range(n_chain_types):
+        seq_a = X[idx_a][C[idx_a] == k]
+        seq_b = X[idx_b][C[idx_b] == k]
+        if len(seq_a) == 0 or len(seq_b) == 0:
+            continue
+        identities.append(antibody_sequence_identity(seq_a, seq_b))
+    return max(identities) if identities else 0.0
+
 def get_dataloaders(path, device, mode='test', train_size=0.95, lm_ab=None, lm_ag=None):
     if mode == 'test':
         shuffle = False
@@ -58,12 +68,10 @@ def get_dataloaders(path, device, mode='test', train_size=0.95, lm_ab=None, lm_a
                     continue
                 #identity_ab = antibody_sequence_identity(X[test_idx][:dataset.len_ab[test_idx]], X[j][:dataset.len_ab[j]])    
                 #identity_ag = antibody_sequence_identity(X[test_idx][dataset.len_ab[test_idx]:], X[j][dataset.len_ab[j]:])    
-                identity = np.zeros((3))
-                for k in range(3):
-                    identity[k] = antibody_sequence_identity(X[test_idx][C[test_idx]==k][:125], X[j][C[test_idx]==k][:125])    
+                identity = max_chain_identity(X, C, test_idx, j)
 
                 #if identity_ab >= 0.6 or identity_ag >= 0.6:
-                if identity.any() >= 0.9:# or identity.all() <= 0.2:
+                if identity >= 0.9:# or identity.all() <= 0.2:
                     add_to_test = False
                     break
 
