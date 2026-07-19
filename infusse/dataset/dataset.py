@@ -44,6 +44,8 @@ class GCNBfDataset(Dataset):
                 else:
                     x_out = embeddings[i]
                 x = x[mask].to(torch.float32)
+                if embeddings is None and ((i + 1) % 100 == 0 or i + 1 == len(X)):
+                    print(f'Embedded {i + 1}/{len(X)} complexes')
                 '''
                 x_ab, x_ag = separate_tokenised_chains(x)
                 mask_ab = x_ab > 4 # Special tokens go from 0 to 4 (incl.) in AntiBERTa 
