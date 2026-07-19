@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+
+/revision/
+results/revision/work/
+results/revision/checkpoints/
+results/revision/embeddings/
+results/revision/predicted_structures/
+results/revision/predictions_*.pkl
+results/revision/*_smoke.csv

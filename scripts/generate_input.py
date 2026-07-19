@@ -12,6 +12,7 @@ from infusse.utils.biology_utils import encode_line, generate_one_hot_matrix, ge
 parser = argparse.ArgumentParser()
 parser.add_argument('--lm', type=str, default='transformer')
 parser.add_argument('--cssp', type=bool, default=False)
+parser.add_argument('--plm', choices=['protbert', 'antiberta2', 'ankh'], default='protbert')
 args = parser.parse_args()
 
 directory = DATA_DIR
@@ -27,7 +28,7 @@ print(len(pdb_codes))
 for file in file_list:
     if file[-8:-4] in pdb_codes:
         if args.lm == 'transformer':
-            X, C, X_ab = get_tokenised_sequence(file, args.cssp)
+            X, C, X_ab = get_tokenised_sequence(file, args.cssp, args.plm)
             X_list.append(X)
             C_list.append(C)
             X_ab_list.append(X_ab)
@@ -35,6 +36,7 @@ for file in file_list:
             X = generate_one_hot_matrix(input_folder+file[-8:-4]+'.txt')
             X_list.append(torch.from_numpy(X))
 
-torch.save(X_list, directory+'gcn_inputs.pt')
+input_name = 'gcn_inputs.pt' if args.plm == 'protbert' else f'gcn_inputs_{args.plm}.pt'
+torch.save(X_list, directory+input_name)
 torch.save(C_list, directory+'chain_inputs.pt')
 torch.save(X_ab_list, directory+'sequences.pt')

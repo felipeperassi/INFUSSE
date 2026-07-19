@@ -12,10 +12,10 @@ from torch.utils.data import Dataset
 from  infusse.utils.biology_utils import separate_tokenised_chains
 
 class GCNBfDataset(Dataset):
-    def __init__(self, edge_indices, edge_attributes, X, Y, device, pdb=None, C=None, lm_ab=None, lm_ag=None):
+    def __init__(self, edge_indices, edge_attributes, X, Y, device, pdb=None, C=None, lm_ab=None, lm_ag=None, special_token_ids=None, embeddings=None):
         self.edge_indices = [edge_index.to(device) for edge_index in edge_indices]
         self.edge_attributes = [edge_attr.to(device) for edge_attr in edge_attributes]
-        if lm_ab is None:
+        if lm_ab is None and embeddings is None:
             self.X = [x.to(device) for x in X]
             self.num_features = X[0].shape[1]
         else:
@@ -24,12 +24,25 @@ class GCNBfDataset(Dataset):
             self.num_features = 1
             self.len_ab = []
             self.len_ag = []
-            print('Generating embeddings with Transformer')
+            if embeddings is None:
+                print('Generating embeddings with Transformer')
             for i, x in enumerate(X):
-                print(i)
-                mask = x > 4
-                x_out = lm_ag(x[None,:].to(torch.int64), output_attentions=False, output_hidden_states=True)['hidden_states'][-1]
-                x_out = x_out[mask.unsqueeze(-1).expand_as(x_out)].view(x_out.size(0), -1, x_out.size(-1))
+                if special_token_ids is None:
+                    mask = x > 4
+                else:
+                    mask = ~torch.isin(x, torch.as_tensor(special_token_ids, device=x.device))
+                if embeddings is None:
+                    if special_token_ids is None:
+                        x_out = lm_ag(
+                            x[None,:].to(torch.int64),
+                            output_attentions=False,
+                            output_hidden_states=True,
+                        )['hidden_states'][-1]
+                    else:
+                        x_out = lm_ag(x[None,:].to(torch.int64)).last_hidden_state
+                    x_out = x_out[mask.unsqueeze(-1).expand_as(x_out)].view(x_out.size(0), -1, x_out.size(-1)).squeeze()
+                else:
+                    x_out = embeddings[i]
                 x = x[mask].to(torch.float32)
                 '''
                 x_ab, x_ag = separate_tokenised_chains(x)

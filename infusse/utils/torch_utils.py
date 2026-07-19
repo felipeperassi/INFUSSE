@@ -1,32 +1,78 @@
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import pickle
+import sys
+from pathlib import Path
+
 import torch
 
 from torch_geometric.loader import DataLoader
 from torch.utils.data import random_split
-from transformers import BertModel, RoFormerModel
+from transformers import BertModel, RoFormerModel, T5EncoderModel
 
 from infusse.dataset.dataset import GCNBfDataset
-from infusse.utils.biology_utils import antibody_sequence_identity, sort_keys
+from infusse.utils.biology_utils import sort_keys
 
-from infusse.config import DATA_DIR
+from infusse.config import DATA_DIR, DEFAULT_GRAPH, EDGE_DATA_FILES
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def max_chain_identity(X, C, idx_a, idx_b, n_chain_types=3):
+def chain_token_sequences(X, C, n_chain_types=3, special_token_ids=None):
+    output = []
+    for tokens, chain_ids in zip(X, C):
+        tokens = torch.as_tensor(tokens)
+        chain_ids = torch.as_tensor(chain_ids, device=tokens.device)
+        if len(tokens) != len(chain_ids):
+            if special_token_ids is None:
+                tokens = tokens[tokens > 4]
+            else:
+                special_ids = torch.as_tensor(special_token_ids, device=tokens.device)
+                tokens = tokens[~torch.isin(tokens, special_ids)]
+        output.append(tuple(tokens[chain_ids == k] for k in range(n_chain_types)))
+    return output
+
+
+def max_prepared_chain_identity(chains_a, chains_b):
     identities = []
-    for k in range(n_chain_types):
-        seq_a = X[idx_a][C[idx_a] == k]
-        seq_b = X[idx_b][C[idx_b] == k]
+    for seq_a, seq_b in zip(chains_a, chains_b):
         if len(seq_a) == 0 or len(seq_b) == 0:
             continue
-        identities.append(antibody_sequence_identity(seq_a, seq_b))
+        if len(seq_a) != len(seq_b):
+            identities.append(0.0)
+        else:
+            identities.append(float((seq_a == seq_b).to(torch.float32).mean()))
     return max(identities) if identities else 0.0
 
-def get_dataloaders(path, device, mode='test', train_size=0.95, lm_ab=None, lm_ag=None):
+
+def max_chain_identity(X, C, idx_a, idx_b, n_chain_types=3, special_token_ids=None):
+    sequences = chain_token_sequences(
+        [X[idx_a], X[idx_b]],
+        [C[idx_a], C[idx_b]],
+        n_chain_types=n_chain_types,
+        special_token_ids=special_token_ids,
+    )
+    return max_prepared_chain_identity(*sequences)
+
+def get_dataloaders(
+    path,
+    device,
+    mode='test',
+    train_size=0.95,
+    lm_ab=None,
+    lm_ag=None,
+    identity_cutoff=0.9,
+    split_seed=0,
+    test_indices_file=None,
+    train_indices_file=None,
+    input_file='gcn_inputs.pt',
+    special_token_ids=None,
+    graph_type=DEFAULT_GRAPH,
+    mmap_edges=False,
+    embedding_file=None,
+):
     if mode == 'test':
         shuffle = False
         batch_size = 1
@@ -34,33 +80,68 @@ def get_dataloaders(path, device, mode='test', train_size=0.95, lm_ab=None, lm_a
         shuffle = True
         batch_size = 1
         
-    edge_data = torch.load(path+'edge_data.pt')
+    edge_file = EDGE_DATA_FILES[graph_type]
+    edge_path = path + edge_file
+    edge_data = torch.load(edge_path, mmap=mmap_edges, map_location='cpu')
     edge_indices = edge_data['edge_index']
     edge_attributes = edge_data['edge_attr']
-    X = torch.load(path+'gcn_inputs.pt')
+    X = torch.load(path+input_file)
     Y = torch.load(path+'b_factors.pt')
     C = torch.load(path+'chain_inputs.pt')
     pdb_codes = np.load(path+'pdb_codes.npy')
+    chain_sequences = chain_token_sequences(X, C, special_token_ids=special_token_ids)
+    embeddings = None
+    embedding_file = Path(embedding_file) if embedding_file else None
+    if embedding_file and embedding_file.exists():
+        cached = torch.load(str(embedding_file), mmap=True, map_location='cpu')
+        if cached['pdb_codes'] != [str(pdb) for pdb in pdb_codes]:
+            raise ValueError(f'Embedding cache does not match {path}pdb_codes.npy.')
+        embeddings = cached['embeddings']
+        print(f'Loaded embeddings from {embedding_file}')
 
-    dataset = GCNBfDataset(edge_indices, edge_attributes, X, Y, device=device, pdb=pdb_codes, C=C, lm_ab=lm_ab, lm_ag=lm_ag)
+    dataset = GCNBfDataset(
+        edge_indices,
+        edge_attributes,
+        X,
+        Y,
+        device=device,
+        pdb=pdb_codes,
+        C=C,
+        lm_ab=lm_ab,
+        lm_ag=lm_ag,
+        special_token_ids=special_token_ids,
+        embeddings=embeddings,
+    )
+    if embedding_file and embeddings is None:
+        embedding_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary_file = embedding_file.with_suffix(embedding_file.suffix + '.tmp')
+        torch.save({
+            'pdb_codes': [str(pdb) for pdb in pdb_codes],
+            'embeddings': [embedding.detach().cpu() for embedding in dataset.X_out],
+        }, temporary_file)
+        os.replace(temporary_file, embedding_file)
+        print(f'Wrote embeddings to {embedding_file}')
     if mode == 'test':
-        test_indices = np.load(path+'test_indices.npy')
+        split_path = test_indices_file or path+'test_indices.npy'
+        test_indices = np.load(split_path)
     train_size = int(train_size * len(dataset))  
     test_size = len(dataset) - train_size
 
-    if mode != 'test':
+    if mode != 'test' and test_indices_file and os.path.exists(test_indices_file):
+        test_indices = np.load(test_indices_file)
+    elif mode != 'test':
         #train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
         train_indices = list(np.arange(len(dataset)))
         test_indices = []
 
         random_order = train_indices.copy()
-        np.random.seed(0)
+        np.random.seed(split_seed)
         np.random.shuffle(random_order)
-        print(random_order)
         for i in range(len(train_indices)):
             test_idx = random_order[i]
             if len(test_indices) >= test_size:
-                np.save(path+'test_indices.npy', np.array(test_indices))
+                split_path = test_indices_file or path+'test_indices.npy'
+                np.save(split_path, np.array(test_indices))
                 break
             add_to_test = True
             for j in train_indices:     
@@ -68,19 +149,27 @@ def get_dataloaders(path, device, mode='test', train_size=0.95, lm_ab=None, lm_a
                     continue
                 #identity_ab = antibody_sequence_identity(X[test_idx][:dataset.len_ab[test_idx]], X[j][:dataset.len_ab[j]])    
                 #identity_ag = antibody_sequence_identity(X[test_idx][dataset.len_ab[test_idx]:], X[j][dataset.len_ab[j]:])    
-                identity = max_chain_identity(X, C, test_idx, j)
+                identity = max_prepared_chain_identity(
+                    chain_sequences[test_idx], chain_sequences[j]
+                )
 
                 #if identity_ab >= 0.6 or identity_ag >= 0.6:
-                if identity >= 0.9:# or identity.all() <= 0.2:
+                if identity >= identity_cutoff:# or identity.all() <= 0.2:
                     add_to_test = False
                     break
 
             if add_to_test:
-                print('Adding a sample to the test set.')
                 test_indices.append(test_idx)
                 train_indices.remove(test_idx)
-    print('Created a valid split, i.e., less than 0.9 training/test sequence identity.')
-    train_dataset, test_dataset = [dataset[i] for i in range(len(dataset)) if i not in test_indices], [dataset[i] for i in test_indices]
+        split_path = test_indices_file or path+'test_indices.npy'
+        np.save(split_path, np.asarray(test_indices, dtype=int))
+    print(f'Created a valid split, i.e., less than {identity_cutoff} training/test sequence identity.')
+    if train_indices_file:
+        train_indices = np.load(train_indices_file)
+    else:
+        train_indices = [i for i in range(len(dataset)) if i not in test_indices]
+    train_dataset = [dataset[i] for i in train_indices]
+    test_dataset = [dataset[i] for i in test_indices]
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle)
     test_loader = DataLoader(test_dataset, batch_size=1)
 
@@ -121,14 +210,98 @@ def load_pickle(file_path):
     with open(file_path, 'rb') as file:
         return pickle.load(file)
 
+def save_pickle(value, file_path):
+    file_path = Path(file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(file_path, 'wb') as file:
+        pickle.dump(value, file)
+
+def prepare_data_directory(
+    source_dir,
+    output_dir,
+    graph_dir=None,
+    input_files=None,
+    graph_type=DEFAULT_GRAPH,
+):
+    source_dir = Path(source_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    input_files = ['gcn_inputs.pt'] if input_files is None else input_files
+    file_names = [
+        'b_factors.pt', 'chain_inputs.pt', 'pdb_codes.npy', 'sequences.pt', *input_files
+    ]
+    for name in file_names:
+        destination = output_dir / name
+        if not destination.exists():
+            destination.symlink_to((source_dir / name).resolve())
+
+    edge_file = EDGE_DATA_FILES[graph_type]
+    edge_path = output_dir / edge_file
+    if edge_path.exists():
+        return edge_path
+    source_edge_path = source_dir / edge_file
+    if source_edge_path.exists():
+        edge_path.symlink_to(source_edge_path.resolve())
+        return edge_path
+    if graph_dir is None:
+        raise ValueError(f'graph_dir is required when {edge_file} is unavailable.')
+
+    import scipy.sparse
+    from torch_geometric.utils.convert import from_scipy_sparse_matrix
+
+    pdb_codes = np.load(source_dir / 'pdb_codes.npy')
+    edge_indices = []
+    edge_attributes = []
+    for pdb in pdb_codes:
+        adjacency = scipy.sparse.load_npz(Path(graph_dir) / f'{pdb}.npz')
+        edge_index, edge_attr = from_scipy_sparse_matrix(adjacency)
+        edge_indices.append(edge_index)
+        edge_attributes.append(edge_attr.to(torch.float))
+    torch.save({'edge_index': edge_indices, 'edge_attr': edge_attributes}, edge_path)
+    return edge_path
+
+def load_legacy_model(path, device='cpu'):
+    import infusse
+    import infusse.model
+    import infusse.model.model
+
+    sys.modules.setdefault('gcn_bf', infusse)
+    sys.modules.setdefault('gcn_bf.model', infusse.model)
+    sys.modules.setdefault('gcn_bf.model.model', infusse.model.model)
+    return torch.load(path, map_location=device, weights_only=False)
+
+@torch.no_grad()
+def sequence_predictions(checkpoint, inputs, chains, indices, device='cpu'):
+    model = load_legacy_model(checkpoint, device=device).to(device).eval()
+    predictions = []
+    for index in indices:
+        tokens = inputs[index].to(device)
+        mask = tokens > 4
+        embedding = model.lm(
+            tokens[None, :].to(torch.int64),
+            output_attentions=False,
+            output_hidden_states=True,
+        )['hidden_states'][-1]
+        embedding = embedding[mask.unsqueeze(-1).expand_as(embedding)].view(
+            embedding.size(0), -1, embedding.size(-1)
+        ).squeeze(0)
+        chain = torch.as_tensor(chains[index], dtype=torch.float32, device=device)
+        pred = model(tokens[mask].float(), embedding, None, None, chain)[0]
+        predictions.append(pred.squeeze().detach().cpu().numpy())
+    return predictions
+
 def load_transformer_weights(family='antibody', cssp=False):
     if family == 'antibody':
         if cssp:
             model = RoFormerModel.from_pretrained('alchemab/antiberta2-cssp')
         else:
             model = RoFormerModel.from_pretrained('alchemab/antiberta2')
-    else:
+    elif family in ('general', 'protbert'):
         model = BertModel.from_pretrained('Rostlab/prot_bert')
+    elif family == 'ankh':
+        model = T5EncoderModel.from_pretrained('ElnaggarLab/ankh-base')
+    else:
+        raise ValueError(f'Unknown transformer family: {family}')
 
     for name, param in model.named_parameters():
         param.requires_grad = False # Freezing parameters
