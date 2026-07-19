@@ -91,7 +91,7 @@ class GCNBfDataset(Dataset):
         edge_index = self.edge_indices[idx]
         edge_attr = self.edge_attributes[idx]
         X = self.X[idx]
-        X_out = self.X_out[idx]
+        X_out = self.X_out[idx].to(torch.float32)
         #len_ab = self.len_ab[idx]
         len_ag = self.len_ag[idx]
         C = self.C[idx]

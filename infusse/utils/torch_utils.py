@@ -115,11 +115,15 @@ def get_dataloaders(
     if embedding_file and embeddings is None:
         embedding_file.parent.mkdir(parents=True, exist_ok=True)
         temporary_file = embedding_file.with_suffix(embedding_file.suffix + '.tmp')
-        torch.save({
-            'pdb_codes': [str(pdb) for pdb in pdb_codes],
-            'embeddings': [embedding.detach().cpu() for embedding in dataset.X_out],
-        }, temporary_file)
-        os.replace(temporary_file, embedding_file)
+        try:
+            torch.save({
+                'pdb_codes': [str(pdb) for pdb in pdb_codes],
+                'embeddings': [embedding.detach().cpu() for embedding in dataset.X_out],
+            }, temporary_file)
+            os.replace(temporary_file, embedding_file)
+        except Exception:
+            temporary_file.unlink(missing_ok=True)
+            raise
         print(f'Wrote embeddings to {embedding_file}')
     if mode == 'test':
         split_path = test_indices_file or path+'test_indices.npy'
