@@ -46,7 +46,7 @@ pathological += ['3okk', '8iqq', '8iqp', '9aur'] # mice bound & unbound, missing
 for file in file_list:
     #file = '/Users/kevinmicha/Documents/all_structures/chothia_gcn/8qh0.pdb'
     print(file[-8:-4])
-    if os.path.isfile(ADJACENCIES_DIR+f'{file[-8:-4]}.npz') and file[-8:-4] not in pathological:
+    if os.path.isfile(CM_DIR+f'{file[-8:-4]}.npz') and file[-8:-4] not in pathological:
         try:
             amino_acids_data = parse_pdb(file)
             if amino_acids_data:

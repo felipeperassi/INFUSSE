@@ -27,7 +27,7 @@ ei_list = []
 ea_list = []
 inv_laplacian_list = []
 X = torch.load(directory+'gcn_inputs.pt')
-Y = torch.load(directory+'b_factors.pt')
+Y = torch.load(directory+'ab_ag_labels.pt')
 
 for i, pdb in enumerate(pdb_codes):
     adjacency = scipy.sparse.load_npz(input_folder+pdb+'.npz')

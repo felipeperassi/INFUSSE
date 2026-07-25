@@ -53,7 +53,7 @@ class GCNBfDataset(Dataset):
                 self.X_out.append(x_out.to(device).squeeze())
 
         self.C = [torch.Tensor(c).to(device) for c in C]
-        self.Y = [y.to(device) for y in Y]
+        self.Y = [y.to(device).float() for y in Y]
         self.pdb = pdb
         self.out_channels = 1
 

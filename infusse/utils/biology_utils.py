@@ -1,8 +1,11 @@
+from collections import defaultdict
 import itertools
 import numpy as np
 import pandas as pd
 import re
 import torch
+from scipy.spatial.distance import cdist
+from dataclasses import dataclass
 
 from infusse.config import STRUCTURE_DIR
 from transformers import BertTokenizer, RoFormerTokenizer
@@ -507,6 +510,132 @@ def parse_pdb(file_path):
                 break
                 
     return b_factors_heavy_chain + b_factors_light_chain + b_factors_antigens
+
+# Residue class to store chain, seq number, CA location and heavy atoms locations
+@dataclass
+class Residue:
+    chain_id: str
+    seq_number: str
+    ca_loc : tuple[float, float, float]
+    heavy_atoms_loc: list[tuple[float, float, float]]
+
+def chains_from_pdb(file_path): # Returns lists of Residue objects for hchain, lchain & ags heavy atoms
+    amino_acid_dictionary = {
+    'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
+    'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+    'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
+    'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
+    'ASX': 'B', 'GLX': 'Z', 'SEC': 'U', 'PYL': 'O', 'XAA': 'X',
+    ' ': ' ', 'UNK': '?',
+    }
+    # Header parsing to identify chains
+    with open(file_path, 'r') as pdb_file:
+        for line in pdb_file:
+            if line.find('AGCHAIN') != -1 or line.find('HCHAIN') != -1 or line.find('LCHAIN') != -1:
+                if line[line.find('AGCHAIN')+len('AGCHAIN')+1:line.find('AGCHAIN')+len('AGCHAIN')+5] != 'NONE':
+                    ag_chain = line[line.find('AGCHAIN')+len('AGCHAIN')+1]
+                    if line[line.find('AGCHAIN')+len('AGCHAIN')+2] == ';':
+                        ag_chain_2 = line[line.find('AGCHAIN')+len('AGCHAIN')+3]
+                        if line[line.find('AGCHAIN')+len('AGCHAIN')+4] == ';':
+                            ag_chain_3 = line[line.find('AGCHAIN')+len('AGCHAIN')+5]
+                        else: 
+                            ag_chain_3 = None
+                    else:
+                        ag_chain_2 = None
+                        ag_chain_3 = None
+                else:
+                    ag_chain = None
+                    ag_chain_2 = None
+                    ag_chain_3 = None
+                h_chain = line[line.find('HCHAIN')+len('HCHAIN')+1]
+                l_chain = line[line.find('LCHAIN')+len('LCHAIN')+1]
+
+    # Lists to store residues of each chain
+    h_chain_heavy_atoms = []
+    l_chain_heavy_atoms = []
+    ag_heavy_atoms = []
+
+    # Init vars
+    current_res = None
+    current_id = None
+    current_seq_number = None
+    prev_dest = None
+
+    with open(file_path, 'r') as pdb_file:
+        for line in pdb_file:
+            if line.startswith('ATOM'):
+                atom_name = line[12:16].strip()
+                chain_id = line[slice(21, 22)].strip()
+                seq_number = line[slice(22, 27)].strip()
+                residue_name = line[17:20].strip()
+                x, y, z = float(line[slice(30, 38)].strip()), float(line[slice(38, 46)].strip()), float(line[slice(46, 54)].strip())
+
+                if not atom_name.startswith('H'): # Only heavy atoms
+                    # ag case
+                    if (chain_id.upper() in [ag_chain, ag_chain_2, ag_chain_3] and l_chain not in [ag_chain, ag_chain_2, ag_chain_3] and h_chain not in [ag_chain, ag_chain_2, ag_chain_3]) or (chain_id in [ag_chain.lower() if ag_chain is not None else None, ag_chain_2.lower() if ag_chain_2 is not None else None, ag_chain_3.lower() if ag_chain_3 is not None else None] and (l_chain in [ag_chain, ag_chain_2, ag_chain_3] or h_chain in [ag_chain, ag_chain_2, ag_chain_3])):
+                        dest = ag_heavy_atoms
+
+                    # h_chain case
+                    elif (chain_id == h_chain or (chain_id.upper() == h_chain and h_chain != l_chain and h_chain != ag_chain)):
+                        dest = h_chain_heavy_atoms
+
+                    # l_chain case  
+                    elif ((l_chain == chain_id.upper() and h_chain != l_chain) or (l_chain.lower() == chain_id and h_chain == l_chain)):
+                        dest = l_chain_heavy_atoms
+                    
+                    else: 
+                        continue # Skip atoms that don't belong to any of the chains of interest (errors)
+                    
+                    if current_id is None or (chain_id, seq_number) != (current_id, current_seq_number): # We find a new res
+                        if current_id is not None: # Not the first res, save the previous before starting the new one
+                            if current_res.ca_loc is not None: # Only save residues with CA location (i.e., valid residues)
+                                prev_dest.append(current_res)
+
+                        current_res = Residue(chain_id=chain_id, seq_number=seq_number, ca_loc=None, heavy_atoms_loc=[])
+                        current_id, current_seq_number = chain_id, seq_number
+                    
+                    if residue_name not in amino_acid_dictionary:
+                        current_id = None 
+                        continue
+                    current_res.heavy_atoms_loc.append((x, y, z)) # Append the heavy atom to the current res
+                    current_res.ca_loc = (x, y, z) if atom_name == 'CA' else current_res.ca_loc # Update CA location if it's a CA atom
+                    prev_dest = dest
+
+        # Save the last residue after the loop
+        if current_res is not None and current_res.ca_loc is not None:
+            prev_dest.append(current_res)
+
+    return h_chain_heavy_atoms, l_chain_heavy_atoms, ag_heavy_atoms
+
+def compute_epitope_paratope(h_chain, l_chain, ag, threshold=5.0, compute_paratope=False):     
+    ab_matrix_full = np.array([atom_loc for res in h_chain + l_chain for atom_loc in res.heavy_atoms_loc]) # All heavy atoms of the ab (for epitope computation)
+    ag_matrix_full = np.array([atom_loc for res in ag for atom_loc in res.heavy_atoms_loc]) # All heavy atoms of the ag (for paratope computation)
+
+    # Epitope computation (1 for epitope res, 0 for rest)
+    epitope_labels = []
+    for res in ag:
+        # if res.ca_loc is None:
+        #     epitope_labels.append(0)
+        #     continue
+        ag_res_matrix = np.array(res.heavy_atoms_loc)
+        dist_matrix = cdist(ag_res_matrix, ab_matrix_full) # Dist[h_atoms ag res, h_atoms of the full ab]
+        epitope_labels.append(1 if np.any(dist_matrix <= threshold) else 0) 
+    
+    # Paratope computation (-1 for paratope res, 0 for rest) -> check the -1
+    paratope_labels = []
+    if compute_paratope:
+        for res in h_chain + l_chain:
+            if res.ca_loc is None:
+                paratope_labels.append(0)
+                continue
+            ab_res_matrix = np.array(res.heavy_atoms_loc)
+            dist_matrix = cdist(ab_res_matrix, ag_matrix_full) # Dist[h_atoms ab res, h_atoms of the full ag]
+            paratope_labels.append(-1 if np.any(dist_matrix <= threshold) else 0) 
+
+    else: # paratope labels not computed, set to 0 for all residues
+        paratope_labels = [0] * (len(h_chain) + len(l_chain))
+
+    return paratope_labels, epitope_labels
 
 def preprocess_interpretability(errors, errors_seq, secondary, ds, heavy, light, paratope_epitope):
     secondary_v = secondary.copy()

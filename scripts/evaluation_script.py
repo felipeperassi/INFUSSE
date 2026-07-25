@@ -4,7 +4,6 @@ import time
 import torch
 
 from torch_geometric.logging import log
-
 from infusse.config import CHECKPOINTS_DIR
 from infusse.dataset.dataset import GCNBfDataset
 from infusse.model.model import GCN
@@ -32,13 +31,27 @@ if args.lm == 'transformer':
     train_loader, test_loader, test_size, dataset = get_dataloaders(checkpoint_path, device, lm_ab=lm_ab, lm_ag=lm)
 else:
     train_loader, test_loader, test_size, _ = get_dataloaders(checkpoint_path, device)
-model = torch.load(checkpoint_path+f'model_{args.graphs}.pth', map_location=device)
-optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
+model = GCN(
+    in_channels=dataset.num_features,
+    hidden_channels=args.hidden_channels,
+    out_channels=dataset.out_channels,
+    lm_dim=1024,
+    lm=lm,
+).to(device)
+model.load_state_dict(torch.load(checkpoint_path+f'model_{args.graphs}.pth', map_location=device))
 
 start = time.time()
+test_loss, f1 = test(model, test_loader, test_size)
 #tmp_test_acc, corr = test(model, test_loader, test_size)
-print(dataset[66])
-tmp_test_acc, corr = test(model, dataset[76], 1) #1mlb 66, 1mlc 76
-log(Corr=corr, Test=tmp_test_acc)
+# print(dataset[66])
+# tmp_test_acc, corr = test(model, dataset[76], 1) #1mlb 66, 1mlc 76
+log(F1=f1, Test_Loss=test_loss)
 eval_time = time.time() - start
 print(f'Median time for evaluation: {eval_time:.4f}s')
+#  for evaluation: {eval_time:.4f}s')
+#  for evaluation: {eval_time:.4f}s')
+#  for evaluation: {eval_time:.4f}s')
+#  for evaluation: {eval_time:.4f}s')
+#  for evaluation: {eval_time:.4f}s')
+#  for evaluation: {eval_time:.4f}s')
+# me for evaluation: {eval_time:.4f}s')

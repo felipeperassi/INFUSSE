@@ -104,6 +104,6 @@ class GCN(torch.nn.Module):
             x = self.conv3(x, torch.squeeze(edge_index), torch.squeeze(edge_weight)) 
         else:
             x = torch.zeros_like(x_seq, dtype=x_seq.dtype, device=x_seq.device)
+        # x_tot = torch.sigmoid(x + x_seq)
         x_tot = x + x_seq
-
         return x_tot, x

@@ -38,7 +38,7 @@ def get_dataloaders(path, device, mode='test', train_size=0.95, lm_ab=None, lm_a
     edge_indices = edge_data['edge_index']
     edge_attributes = edge_data['edge_attr']
     X = torch.load(path+'gcn_inputs.pt')
-    Y = torch.load(path+'b_factors.pt')
+    Y = torch.load(path+'ab_ag_labels.pt')
     C = torch.load(path+'chain_inputs.pt')
     pdb_codes = np.load(path+'pdb_codes.npy')
 
@@ -185,22 +185,57 @@ def plot_performance(model, loader, ca_index, cdr_positions, glob=False, res_dic
     return res_dict, list_of_errors, y, pred
 
 
+# @torch.no_grad()
+# def test(model, test_loader, test_size):
+#     model.eval()
+#     test_loss = 0.0
+#     corr = 0.0
+#     for loader in test_loader:
+#         pred = model(loader.x, loader.x_out, loader.edge_index, loader.edge_attr, loader.c)[0]#, loader.len_ab, loader.len_ag)
+#         #print(pred)
+#         #print(loader.y)
+#         loss = torch.nn.MSELoss(reduction='mean')(torch.squeeze(pred), torch.squeeze(loader.y))
+#         test_loss += loader.num_graphs * loss.item() / test_size
+#         print(loader.pdb)
+#         print(loader.num_graphs * torch.corrcoef(torch.stack((torch.squeeze(pred), torch.squeeze(loader.y))))[0,1])
+#         corr += loader.num_graphs * torch.corrcoef(torch.stack((torch.squeeze(pred), torch.squeeze(loader.y))))[0,1] / test_size 
+
+#     return float(test_loss), float(corr)
+
 @torch.no_grad()
 def test(model, test_loader, test_size):
     model.eval()
     test_loss = 0.0
-    corr = 0.0
+    all_preds = []
+    all_labels = []
     for loader in test_loader:
-        pred = model(loader.x, loader.x_out, loader.edge_index, loader.edge_attr, loader.c)[0]#, loader.len_ab, loader.len_ag)
-        #print(pred)
-        #print(loader.y)
-        loss = torch.nn.MSELoss(reduction='mean')(torch.squeeze(pred), torch.squeeze(loader.y))
+        pred = model(loader.x, loader.x_out, loader.edge_index, loader.edge_attr, loader.c)[0]
+        ag_mask = (loader.c.long() == 2)
+        loss = torch.nn.BCEWithLogitsLoss()(torch.squeeze(pred)[ag_mask], torch.squeeze(loader.y)[ag_mask])
         test_loss += loader.num_graphs * loss.item() / test_size
-        print(loader.pdb)
-        print(loader.num_graphs * torch.corrcoef(torch.stack((torch.squeeze(pred), torch.squeeze(loader.y))))[0,1])
-        corr += loader.num_graphs * torch.corrcoef(torch.stack((torch.squeeze(pred), torch.squeeze(loader.y))))[0,1] / test_size 
+        all_preds.append(torch.squeeze(pred)[ag_mask])
+        all_labels.append(torch.squeeze(loader.y)[ag_mask])
 
-    return float(test_loss), float(corr)
+    all_preds = torch.cat(all_preds)
+    all_labels = torch.cat(all_labels)
+    pred_binary = (torch.sigmoid(all_preds) > 0.5).float()
+
+    tp = ((pred_binary == 1) & (all_labels == 1)).sum().float()
+    fp = ((pred_binary == 1) & (all_labels == 0)).sum().float()
+    fn = ((pred_binary == 0) & (all_labels == 1)).sum().float()
+    tn = ((pred_binary == 0) & (all_labels == 0)).sum().float()
+
+    accuracy = (tp + tn) / (tp + tn + fp + fn + 1e-8)
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (tp + fn + 1e-8)
+    f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    mcc_num = (tp * tn - fp * fn)
+    mcc_den = torch.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn) + 1e-8)
+    mcc = mcc_num / mcc_den
+
+    print(f'  Acc: {accuracy:.4f}, Prec: {precision:.4f}, Rec: {recall:.4f}, F1: {f1:.4f}, MCC: {mcc:.4f}')
+
+    return float(test_loss), float(f1)
 
 def train(model, optimiser, train_loader, train_size, initial_weights=None):
     model.train()
@@ -208,13 +243,14 @@ def train(model, optimiser, train_loader, train_size, initial_weights=None):
     for loader in train_loader:
         optimiser.zero_grad()
         out, struct_out = model(loader.x, loader.x_out, loader.edge_index, loader.edge_attr, loader.c)#, loader.len_ab, loader.len_ag)
-        
+        ag_mask = (loader.c.long() == 2)
         penalty_loss = 0.0
         if initial_weights:
             for name, param in model.named_parameters():
                 if param.requires_grad and 'sequence_linear' in name:
                     penalty_loss += torch.sum((param - initial_weights[name]) ** 2)
-        loss = torch.nn.MSELoss(reduction='mean')(torch.squeeze(out), torch.squeeze(loader.y)) #+ 0.01 * penalty_loss #+ 0.01 * torch.sum(struct_out ** 2)
+        # loss = torch.nn.MSELoss(reduction='mean')(torch.squeeze(out), torch.squeeze(loader.y)) #+ 0.01 * penalty_loss #+ 0.01 * torch.sum(struct_out ** 2)
+        loss = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([5.0], device=out.device))(torch.squeeze(out)[ag_mask], torch.squeeze(loader.y)[ag_mask])
         tr_loss += loader.num_graphs * loss.item() / train_size 
         loss.backward()
         optimiser.step()

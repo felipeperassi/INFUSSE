@@ -64,7 +64,7 @@ logging.info('Training is starting')
 best_val_acc = test_acc = 0
 times = []
 with open(log_file_path, 'a') as log_file:
-    for epoch in range(1, 11):#args.epochs + 1):
+    for epoch in range(1, args.epochs + 1):
         start = time.time()
         loss = train(model, optimiser, train_loader, len(dataset)-test_size)
         tmp_test_acc, corr = test(model, test_loader, test_size)
@@ -75,7 +75,7 @@ print(f'Median time per epoch: {np.median(times):.4f}s')
 
 if args.seq_only:
 
-    torch.save(model, CHECKPOINTS_DIR+f'model_{args.graphs}_{args.lm}_features_hidden_channels_{args.hidden_channels}_lr_{args.lr}_epochs_10_sequence_only_.pth')
+    torch.save(model.state_dict(), CHECKPOINTS_DIR+f'model_{args.graphs}_{args.lm}_features_hidden_channels_{args.hidden_channels}_lr_{args.lr}_epochs_{args.epochs}_sequence_only_.pth')
 
     logging.info('GCN-only training is starting')
 
@@ -102,13 +102,13 @@ if args.seq_only:
     for epoch in range(1, args.epochs + 1):
         start = time.time()
         loss = train(full_model, optimiser_full, train_loader, len(dataset) - test_size, initial_weights)
-        tmp_test_acc, corr = test(full_model, test_loader, test_size)
-        logging.info(f'Epoch: {epoch}, Loss: {loss:.4f}, Corr: {corr:.4f}, Test Accuracy: {tmp_test_acc:.4f}, Time: {time.time() - start:.2f}s')
-        log(Epoch=epoch, Loss=loss, Corr=corr, Test=tmp_test_acc)
+        tmp_test_acc, f1 = test(full_model, test_loader, test_size)
+        logging.info(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {f1:.4f}, Test Accuracy: {tmp_test_acc:.4f}, Time: {time.time() - start:.2f}s')
+        log(Epoch=epoch, Loss=loss, F1=f1, Test=tmp_test_acc)
         times.append(time.time() - start)
 
     print(f'Median time per epoch: {np.median(times):.4f}s')
 
     model = full_model
 
-torch.save(model, CHECKPOINTS_DIR+f'model_{args.graphs}_{args.lm}_features_hidden_channels_{args.hidden_channels}_lr_{args.lr}_epochs_{args.epochs}_sequential_{args.seq_only}_.pth')
+torch.save(model.state_dict(), CHECKPOINTS_DIR+f'model_{args.graphs}_{args.lm}_features_hidden_channels_{args.hidden_channels}_lr_{args.lr}_epochs_{args.epochs}_sequential_{args.seq_only}_.pth')
