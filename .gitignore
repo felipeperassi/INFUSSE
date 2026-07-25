@@ -3,4 +3,4 @@ data/*
 INFUSSE.egg-info/*
 checkpoints/*
 data/*
-__pycache__/
+__pycache__/data/
