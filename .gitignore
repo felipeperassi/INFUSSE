@@ -1,11 +1,6 @@
 build/*
 data/*
-
 INFUSSE.egg-info/*
-
-checkpoints/posw 20/*
-
-checkpoints/posw 30/*
-
-__pycache__/checkpoints/
-data/edge_data.pt
+checkpoints/*
+data/*
+__pycache__/
