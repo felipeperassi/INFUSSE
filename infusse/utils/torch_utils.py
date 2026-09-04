@@ -13,7 +13,7 @@ from torch.utils.data import random_split
 from transformers import BertModel, RoFormerModel, T5EncoderModel
 
 from infusse.dataset.dataset import GCNBfDataset
-from infusse.utils.biology_utils import sort_keys
+from infusse.utils.biology_utils import antibody_sequence_identity, sort_keys
 
 from infusse.config import DATA_DIR, DEFAULT_GRAPH, EDGE_DATA_FILES
 
@@ -40,10 +40,7 @@ def max_prepared_chain_identity(chains_a, chains_b):
     for seq_a, seq_b in zip(chains_a, chains_b):
         if len(seq_a) == 0 or len(seq_b) == 0:
             continue
-        if len(seq_a) != len(seq_b):
-            identities.append(0.0)
-        else:
-            identities.append(float((seq_a == seq_b).to(torch.float32).mean()))
+        identities.append(antibody_sequence_identity(seq_a, seq_b, filter_special=False))
     return max(identities) if identities else 0.0
 
 

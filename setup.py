@@ -28,6 +28,6 @@ setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     packages=['infusse', 'infusse.dataset', 'infusse.model', 'infusse.utils'],
-    install_requires=['logomaker', 'matplotlib', 'numpy', 'pandas', 'requests', 'scikit-learn', 'scipy', 'torch', 'torch_geometric', 'transformers'],
+    install_requires=['biopython', 'logomaker', 'matplotlib', 'numpy', 'pandas', 'requests', 'scikit-learn', 'scipy', 'torch', 'torch_geometric', 'transformers'],
     cmdclass={'test': PyTest}
 )

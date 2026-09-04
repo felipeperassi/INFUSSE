@@ -122,8 +122,9 @@ logging.info('Training is starting')
 
 best_val_acc = test_acc = 0
 times = []
+initial_epochs = 10 if args.seq_only else args.epochs
 with open(log_file_path, 'a') as log_file:
-    for epoch in range(1, 11):#args.epochs + 1):
+    for epoch in range(1, initial_epochs + 1):
         start = time.time()
         loss = train(model, optimiser, train_loader, len(train_loader.dataset))
         if args.skip_epoch_test:

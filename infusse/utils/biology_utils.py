@@ -4,8 +4,18 @@ import pandas as pd
 import re
 import torch
 
+from Bio.Align import PairwiseAligner
 from infusse.config import STRUCTURE_DIR
 from transformers import AutoTokenizer, BertTokenizer, RoFormerTokenizer
+
+
+sequence_aligner = PairwiseAligner()
+sequence_aligner.mode = 'global'
+sequence_aligner.match_score = 1
+sequence_aligner.mismatch_score = 0
+sequence_aligner.open_gap_score = 0
+sequence_aligner.extend_gap_score = 0
+
 
 def antibody_sequence_identity(seq1, seq2, filter_special=True):
     r"""Computes the percentage of sequence identity.
@@ -18,19 +28,17 @@ def antibody_sequence_identity(seq1, seq2, filter_special=True):
         Second sequence.
     
     """
-    if len(seq1) != len(seq2):
+    seq1 = np.asarray(seq1, dtype=np.int32)
+    seq2 = np.asarray(seq2, dtype=np.int32)
+    if filter_special:
+        seq1 = seq1[seq1 > 4]
+        seq2 = seq2[seq2 > 4]
+    if not len(seq1) or not len(seq2):
         return 0
-
-    valid_aa = [
-        (a, b) for a, b in zip(seq1, seq2)
-        if not filter_special or (a > 4 and b > 4)
-    ]
-    if not valid_aa:
-        return 0
-        
-    matches = sum(1 for a, b in valid_aa if a == b)
-    
-    return matches / len(valid_aa)
+    if len(seq1) == len(seq2):
+        return float(np.mean(seq1 == seq2))
+    matches = sequence_aligner.score(seq1, seq2)
+    return float(matches / max(len(seq1), len(seq2)))
 
 def bootstrap_test(
     delta_graph,
