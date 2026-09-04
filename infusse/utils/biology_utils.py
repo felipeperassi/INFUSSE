@@ -4,10 +4,20 @@ import pandas as pd
 import re
 import torch
 
+from Bio.Align import PairwiseAligner
 from infusse.config import STRUCTURE_DIR
-from transformers import BertTokenizer, RoFormerTokenizer
+from transformers import AutoTokenizer, BertTokenizer, RoFormerTokenizer
 
-def antibody_sequence_identity(seq1, seq2):
+
+sequence_aligner = PairwiseAligner()
+sequence_aligner.mode = 'global'
+sequence_aligner.match_score = 1
+sequence_aligner.mismatch_score = 0
+sequence_aligner.open_gap_score = 0
+sequence_aligner.extend_gap_score = 0
+
+
+def antibody_sequence_identity(seq1, seq2, filter_special=True):
     r"""Computes the percentage of sequence identity.
 
     Parameters
@@ -18,18 +28,32 @@ def antibody_sequence_identity(seq1, seq2):
         Second sequence.
     
     """
-    if len(seq1) != len(seq2):
+    seq1 = np.asarray(seq1, dtype=np.int32)
+    seq2 = np.asarray(seq2, dtype=np.int32)
+    if filter_special:
+        seq1 = seq1[seq1 > 4]
+        seq2 = seq2[seq2 > 4]
+    if not len(seq1) or not len(seq2):
         return 0
+    if len(seq1) == len(seq2):
+        return float(np.mean(seq1 == seq2))
+    matches = sequence_aligner.score(seq1, seq2)
+    return float(matches / max(len(seq1), len(seq2)))
 
-    valid_aa = [(a, b) for a, b in zip(seq1, seq2) if a > 4 and b > 4]
-    if not valid_aa:
-        return 0
-        
-    matches = sum(1 for a, b in valid_aa if a == b)
-    
-    return matches / len(valid_aa)
-
-def bootstrap_test(delta_graph, labels, ind_class='secondary_ab', B=100000, statistic='mean', compare_to_zero=False, all_pairwise=False):         
+def bootstrap_test(
+    delta_graph,
+    labels,
+    ind_class='secondary_ab',
+    B=100000,
+    statistic='mean',
+    compare_to_zero=False,
+    all_pairwise=False,
+    cluster=False,
+    resampling_unit='residue',
+    alternative='greater',
+    seed=None,
+    return_results=False,
+):
     """
     Performs pairwise bootstrap hypothesis tests to compare the means (or IQR) of multiple classes.
 
@@ -49,75 +73,182 @@ def bootstrap_test(delta_graph, labels, ind_class='secondary_ab', B=100000, stat
         If 'True' run comparison with zero mean.
     all_pairwise: bool
         If 'True' compare every unordered pair of classes.
+    cluster: bool
+        If 'True', resample complete complexes instead of residues.
+    resampling_unit: str
+        'residue' keeps the original residue-level bootstrap. 'complex' resamples
+        whole antibody-antigen complexes, preserving within-complex dependence.
+    alternative: str
+        'greater' keeps the original one-sided ASL convention. 'two-sided' uses
+        absolute deviations from the null.
+    seed: int or None
+        Random seed for reproducible resampling.
+    return_results: bool
+        If 'True', return a list of dictionaries with the printed results.
 
     """
     
     if statistic not in ('mean', 'iqr'):
         raise ValueError("statistic must be 'mean' or 'iqr'")
+    if cluster:
+        resampling_unit = 'complex'
+    if resampling_unit not in ('residue', 'complex'):
+        raise ValueError("resampling_unit must be 'residue' or 'complex'")
+    if alternative not in ('greater', 'two-sided'):
+        raise ValueError("alternative must be 'greater' or 'two-sided'")
+
+    rng = np.random.default_rng(seed) if seed is not None else None
+
+    def choice(values, size):
+        if rng is None:
+            return np.random.choice(values, size=size, replace=True)
+        return rng.choice(values, size=size, replace=True)
+
+    def cluster_indices(size):
+        if rng is None:
+            return np.random.randint(0, size, size=size)
+        return rng.integers(0, size, size=size)
 
     def get_statistic(arr):
+        arr = np.asarray(arr, dtype=float)
         return (np.mean(arr) if statistic == 'mean' else np.subtract(*np.percentile(arr, [75, 25])))
 
     stat_label = 'means' if statistic == 'mean' else 'IQRs'
+    paired = [
+        (np.asarray(delta_graph_sublist, dtype=float), np.asarray(label_sublist))
+        for delta_graph_sublist, label_sublist in zip(delta_graph, labels)
+        if len(delta_graph_sublist) == len(label_sublist)
+    ]
+    if not paired:
+        raise ValueError('No complexes have matching delta_graph and label lengths.')
 
-    delta_graph_flat = []
-    labels_flat = []
+    delta_graph_flat = np.concatenate([item[0] for item in paired])
+    labels_flat_raw = np.concatenate([item[1] for item in paired])
 
-    for delta_graph_sublist, label_sublist in zip(delta_graph, labels):
-        if len(delta_graph_sublist) == len(label_sublist):
-            delta_graph_flat.extend(delta_graph_sublist)
-            labels_flat.extend(label_sublist)
-    delta_graph_flat = np.array(delta_graph_flat)
-    labels_flat = np.array(labels_flat)
-
+    label_names = None
     if ind_class == 'cdr_status':
-        labels_flat = [1 if sec in [3, 4, 5] else 0 for sec in labels_flat]  
+        labels_per_complex = [
+            np.asarray([1 if sec in [3, 4, 5] else 0 for sec in label_sublist], dtype=int)
+            for _, label_sublist in paired
+        ]
         label_names = ['FR', 'CDR']
     elif ind_class == 'entropy':
-        ent_bits = np.array(labels_flat, dtype=float) / np.log(2)
+        ent_bits = np.array(labels_flat_raw, dtype=float) / np.log(2)
         ds_bin = pd.qcut(ent_bits, q=2, labels=[0, 1])
-        labels_flat = ds_bin.to_numpy(dtype=int, na_value=-1)
+        labels_flat_tmp = ds_bin.to_numpy(dtype=int, na_value=-1)
+        labels_per_complex = []
+        cursor = 0
+        for _, label_sublist in paired:
+            n_labels = len(label_sublist)
+            labels_per_complex.append(labels_flat_tmp[cursor:cursor+n_labels])
+            cursor += n_labels
         label_names = ['Low', 'High']
     elif ind_class == 'secondary_ab':
+        labels_per_complex = [label_sublist.astype(int) for _, label_sublist in paired]
         label_names = ['Helix (FR)', 'Strand (FR)', 'Loop (FR)', 'Helix (CDR)', 'Strand (CDR)', 'Loop (CDR)']
     elif ind_class == 'secondary_ag':
+        labels_per_complex = [label_sublist.astype(int) for _, label_sublist in paired]
         label_names = ['Helix', 'Strand', 'Loop']
     elif ind_class == 'paratope':
+        labels_per_complex = [label_sublist.astype(int) for _, label_sublist in paired]
         label_names = ['Non-paratope', 'Paratope']
     elif ind_class == 'epitope':
+        labels_per_complex = [label_sublist.astype(int) for _, label_sublist in paired]
         label_names = ['Non-epitope', 'Epitope']
+    else:
+        labels_per_complex = [label_sublist.astype(int) for _, label_sublist in paired]
 
+    labels_flat = np.concatenate(labels_per_complex)
     unique_labels = np.unique(labels_flat)
     if ind_class in ['epitope', 'paratope']:
         unique_labels = np.array([0, 1])
 
+    valid_by_label = {}
+    for label in unique_labels:
+        samples = [
+            values[complex_labels == label]
+            for (values, _), complex_labels in zip(paired, labels_per_complex)
+            if np.any(complex_labels == label)
+        ]
+        if samples:
+            valid_by_label[label] = np.concatenate(samples)
+
+    def format_p_value(p_value):
+        if p_value:
+            return f'p-value = {p_value}'
+        return f'p-value < {1/B}'
+
+    def cluster_stat(indices, label, source_paired=None):
+        source_paired = paired if source_paired is None else source_paired
+        sample = [
+            source_paired[i][0][labels_per_complex[i] == label]
+            for i in indices
+            if np.any(labels_per_complex[i] == label)
+        ]
+        if not sample:
+            return np.nan
+        return get_statistic(np.concatenate(sample))
+
+    def cluster_diff(indices, label_high, label_low):
+        stat_high = cluster_stat(indices, label_high)
+        stat_low = cluster_stat(indices, label_low)
+        if np.isnan(stat_high) or np.isnan(stat_low):
+            return np.nan
+        return stat_high - stat_low
+
+    results = []
     if compare_to_zero:
         for label in unique_labels:
-            sample = delta_graph_flat[labels_flat == label]
+            if label not in valid_by_label:
+                continue
+            sample = valid_by_label[label]
             N      = len(sample)
             stat_obs = get_statistic(sample)         
 
             # We build the null distribution with mean zero, centre sample, resample, compute statistic...
-            centred = sample - stat_obs
-            t_b = []
-            for _ in range(B):
-                boot = np.random.choice(centred, size=N, replace=True)
-                t_b.append(get_statistic(boot))
+            if resampling_unit == 'residue':
+                centred = sample - stat_obs
+                t_b = []
+                for _ in range(B):
+                    boot = choice(centred, N)
+                    t_b.append(get_statistic(boot))
+            else:
+                centred_values = [
+                    values - stat_obs
+                    for values, _ in paired
+                ]
+                paired_centred = list(zip(centred_values, [item[1] for item in paired]))
+                t_b = []
+                for _ in range(B):
+                    idx = cluster_indices(len(paired))
+                    t_b.append(cluster_stat(idx, label, source_paired=paired_centred))
 
             t_b   = np.asarray(t_b)
-            p_val = (t_b >= stat_obs).mean() if stat_obs >= 0 else (t_b <= stat_obs).mean()
-
-            if p_val:
-                print(f'{stat_label[:-1].capitalize()} for {label_names[label]} vs 0: '
-                      f'{stat_obs} (p-value = {p_val}).')
+            t_b = t_b[~np.isnan(t_b)]
+            if alternative == 'two-sided':
+                p_val = (np.abs(t_b) >= np.abs(stat_obs)).mean()
             else:
-                print(f'{stat_label[:-1].capitalize()} for {label_names[label]} vs 0: '
-                      f'{stat_obs} (p-value < {1/B}).')
-        return # stop here
+                p_val = (t_b >= stat_obs).mean() if stat_obs >= 0 else (t_b <= stat_obs).mean()
+
+            label_name = label_names[label] if label_names is not None else label
+            print(f'{stat_label[:-1].capitalize()} for {label_name} vs 0: '
+                  f'{stat_obs} ({format_p_value(p_val)}; resampling_unit = {resampling_unit}; '
+                  f'alternative = {alternative}).')
+            results.append({
+                'comparison': f'{label_name} vs 0',
+                'statistic': statistic,
+                'observed': stat_obs,
+                'p_value': p_val,
+                'resampling_unit': resampling_unit,
+                'alternative': alternative,
+            })
+        return results if return_results else None # stop here
 
     means = []
     for label in unique_labels:
-        means.append((label, get_statistic(delta_graph_flat[labels_flat == label])))
+        if label not in valid_by_label:
+            continue
+        means.append((label, get_statistic(valid_by_label[label])))
     means.sort(key=lambda x: x[1], reverse=True)
     sorted_labels = [x[0] for x in means]
 
@@ -127,8 +258,8 @@ def bootstrap_test(delta_graph, labels, ind_class='secondary_ab', B=100000, stat
         pair_list = zip(sorted_labels[:-1], sorted_labels[1:])  # original
 
     for label_high, label_low in pair_list:
-        delta_high = delta_graph_flat[labels_flat == label_high]
-        delta_low  = delta_graph_flat[labels_flat == label_low]
+        delta_high = valid_by_label[label_high]
+        delta_low  = valid_by_label[label_low]
 
         N_high, N_low = len(delta_high), len(delta_low)
         mu_high = get_statistic(delta_high)
@@ -136,21 +267,128 @@ def bootstrap_test(delta_graph, labels, ind_class='secondary_ab', B=100000, stat
         t_obs   = mu_high - mu_low
 
         t_b = []
-        for _ in range(B):
-            boot_high = np.random.choice(delta_graph_flat, N_high, True)
-            boot_low  = np.random.choice(delta_graph_flat, N_low,  True)
-            t_b.append(get_statistic(boot_high) - get_statistic(boot_low))
-
-        p_value = (np.array(t_b) >= t_obs).mean()
-
-        if p_value:
-            print(f'Difference of {stat_label} between '
-                  f'{label_names[label_high]} and {label_names[label_low]}: '
-                  f'{t_obs} (p-value = {p_value}).')
+        if resampling_unit == 'residue':
+            for _ in range(B):
+                boot_high = choice(delta_graph_flat, N_high)
+                boot_low  = choice(delta_graph_flat, N_low)
+                t_b.append(get_statistic(boot_high) - get_statistic(boot_low))
         else:
-            print(f'Difference of {stat_label} between '
-                  f'{label_names[label_high]} and {label_names[label_low]}: '
-                  f'{t_obs} (p-value < {1/B}).')
+            for _ in range(B):
+                idx = cluster_indices(len(paired))
+                t_b.append(cluster_diff(idx, label_high, label_low))
+
+        t_b = np.asarray(t_b)
+        t_b = t_b[~np.isnan(t_b)]
+        if resampling_unit == 'residue':
+            if alternative == 'two-sided':
+                p_value = (np.abs(t_b) >= np.abs(t_obs)).mean()
+            else:
+                p_value = (t_b >= t_obs).mean()
+        else:
+            # Cluster bootstrap resamples estimate sampling variation around the
+            # observed statistic, so centre them before testing against zero.
+            centred_t_b = t_b - t_obs
+            if alternative == 'two-sided':
+                p_value = (np.abs(centred_t_b) >= np.abs(t_obs)).mean()
+            else:
+                p_value = (centred_t_b >= t_obs).mean()
+
+        label_high_name = label_names[label_high] if label_names is not None else label_high
+        label_low_name = label_names[label_low] if label_names is not None else label_low
+        print(f'Difference of {stat_label} between '
+              f'{label_high_name} and {label_low_name}: '
+              f'{t_obs} ({format_p_value(p_value)}; resampling_unit = {resampling_unit}; '
+              f'alternative = {alternative}).')
+        results.append({
+            'comparison': f'{label_high_name} - {label_low_name}',
+            'statistic': statistic,
+            'observed': t_obs,
+            'p_value': p_value,
+            'resampling_unit': resampling_unit,
+            'alternative': alternative,
+        })
+    return results if return_results else None
+
+def pearson(y, pred):
+    y = np.asarray(y, dtype=float)
+    pred = np.asarray(pred, dtype=float)
+    if len(y) < 2 or np.std(y) == 0 or np.std(pred) == 0:
+        return np.nan
+    return float(np.corrcoef(y, pred)[0, 1])
+
+def mean_sd(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        return np.nan, np.nan
+    return float(values.mean()), float(values.std(ddof=1)) if len(values) > 1 else 0.0
+
+def cluster_resample_counts(n_clusters, n_bootstraps, seed=0):
+    rng = np.random.default_rng(seed)
+    probabilities = np.full(n_clusters, 1 / n_clusters)
+    return rng.multinomial(n_clusters, probabilities, size=n_bootstraps)
+
+def _weighted_percentile_distribution(values, cluster_ids, counts, quantile, batch_size):
+    order = np.argsort(values)
+    sorted_values = np.asarray(values)[order]
+    sorted_clusters = np.asarray(cluster_ids, dtype=int)[order]
+    output = np.empty(len(counts), dtype=float)
+    for start in range(0, len(counts), batch_size):
+        stop = min(start + batch_size, len(counts))
+        weights = counts[start:stop, sorted_clusters]
+        cumulative = np.cumsum(weights, axis=1)
+        total = cumulative[:, -1]
+        position = (total - 1) * quantile
+        lower_rank = np.floor(position).astype(int)
+        upper_rank = np.ceil(position).astype(int)
+        lower_index = np.argmax(cumulative > lower_rank[:, None], axis=1)
+        upper_index = np.argmax(cumulative > upper_rank[:, None], axis=1)
+        fraction = position - lower_rank
+        output[start:stop] = (
+            sorted_values[lower_index] * (1 - fraction)
+            + sorted_values[upper_index] * fraction
+        )
+    return output
+
+def cluster_bootstrap_statistics(values, labels, counts, batch_size=250):
+    values = [np.asarray(value, dtype=float) for value in values]
+    labels = [np.asarray(label, dtype=int) for label in labels]
+    unique_labels = np.unique(np.concatenate(labels))
+    statistics = {}
+    for label in unique_labels:
+        group_values = []
+        group_clusters = []
+        sums = np.zeros(len(values), dtype=float)
+        sizes = np.zeros(len(values), dtype=int)
+        for cluster, (cluster_values, cluster_labels) in enumerate(zip(values, labels)):
+            selected = cluster_values[cluster_labels == label]
+            sums[cluster] = selected.sum()
+            sizes[cluster] = len(selected)
+            group_values.extend(selected)
+            group_clusters.extend([cluster] * len(selected))
+        group_values = np.asarray(group_values, dtype=float)
+        group_clusters = np.asarray(group_clusters, dtype=int)
+        denominators = counts @ sizes
+        mean_distribution = (counts @ sums) / denominators
+        q25 = _weighted_percentile_distribution(
+            group_values, group_clusters, counts, 0.25, batch_size
+        )
+        q75 = _weighted_percentile_distribution(
+            group_values, group_clusters, counts, 0.75, batch_size
+        )
+        observed_mean = float(group_values.mean())
+        statistics[int(label)] = {
+            'mean_observed': observed_mean,
+            'mean_distribution': mean_distribution,
+            'mean_null_distribution': (
+                counts @ (sums - observed_mean * sizes)
+            ) / denominators,
+            'iqr_observed': float(
+                np.percentile(group_values, 75) - np.percentile(group_values, 25)
+            ),
+            'iqr_distribution': q75 - q25,
+        }
+    return statistics
             
 def compute_average_b_factors(b_amino_acids, b_factor_thr=100):
     unp = False
@@ -345,7 +583,16 @@ def get_paratope_members(paratope_data, len_h, len_l):
         light_paratope = [2 for i in range(len_l)]
     return heavy_paratope + light_paratope
 
-def get_tokenised_sequence(file_path, cssp=False):
+def get_transformer_tokenizer(plm='protbert', cssp=False):
+    if plm == 'antiberta2':
+        model_name = 'alchemab/antiberta2-cssp' if cssp else 'alchemab/antiberta2'
+        return RoFormerTokenizer.from_pretrained(model_name)
+    if plm == 'ankh':
+        return AutoTokenizer.from_pretrained('ElnaggarLab/ankh-base')
+    return BertTokenizer.from_pretrained('Rostlab/prot_bert', do_lower_case=False)
+
+
+def get_tokenised_sequence(file_path, cssp=False, plm='protbert'):
     aa_pos = 1
     chain_pos = 2
     amino_acid_dictionary = {
@@ -383,11 +630,7 @@ def get_tokenised_sequence(file_path, cssp=False):
     if h_chain == l_chain == ag_chain:
         ag_chain = None
         
-    if cssp:
-        tokeniser_ab = RoFormerTokenizer.from_pretrained('alchemab/antiberta2-cssp')
-    else:
-        tokeniser_ab = RoFormerTokenizer.from_pretrained('alchemab/antiberta2')
-    tokeniser_ag = BertTokenizer.from_pretrained('Rostlab/prot_bert', do_lower_case=False)
+    tokeniser = get_transformer_tokenizer(plm, cssp)
 
     with open(file_path, 'r') as pdb_file:
         for line in pdb_file:
@@ -416,13 +659,27 @@ def get_tokenised_sequence(file_path, cssp=False):
         C.extend([2] * len(ag_chain_seq))
         #if '?' in X_ag:
         #    print(pdb_file)
-        input_seq_ag = format_sequence(X_ag)
-        inputs_ag = tokeniser_ag(input_seq_ag, return_tensors='pt')['input_ids'][0]
+        if plm == 'ankh':
+            inputs_ag = tokeniser(
+                list(X_ag.replace(':', '').replace('?', 'X')),
+                is_split_into_words=True,
+                return_tensors='pt',
+            )['input_ids'][0]
+        else:
+            input_seq_ag = format_sequence(X_ag)
+            inputs_ag = tokeniser(input_seq_ag, return_tensors='pt')['input_ids'][0]
         #inputs = torch.cat((inputs, torch.Tensor([1]), inputs_ag))
         inputs = inputs_ag #torch.cat((inputs, inputs_ag))
     else:
-        input_seq_ab = format_sequence(X_ab)
-        inputs = tokeniser_ag(input_seq_ab, return_tensors='pt')['input_ids'][0]
+        if plm == 'ankh':
+            inputs = tokeniser(
+                list(X_ab.replace(':', '').replace('?', 'X')),
+                is_split_into_words=True,
+                return_tensors='pt',
+            )['input_ids'][0]
+        else:
+            input_seq_ab = format_sequence(X_ab)
+            inputs = tokeniser(input_seq_ab, return_tensors='pt')['input_ids'][0]
     return inputs, C, X_ab
 
 def get_antigen_only(lists, heavy, light):
