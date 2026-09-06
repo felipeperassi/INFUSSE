@@ -7,18 +7,18 @@ import os
 
 from torch_geometric.logging import log
 
-from infusse.config import CHECKPOINTS_DIR, DATA_DIR, STRUCTURE_DIR
+from infusse.config import CHECKPOINTS_DIR, DATA_DIR, DEFAULT_GRAPH, GRAPH_TYPES, STRUCTURE_DIR
 from infusse.dataset.dataset import GCNBfDataset
 from infusse.model.model import GCN
 from infusse.utils.biology_utils import extract_list_of_residues, find_cdr_positions
 from infusse.utils.torch_utils import count_parameters, get_dataloaders, plot_performance, load_transformer_weights, test, train
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--graphs', type=str, default='gnm')
+parser.add_argument('--graphs', choices=GRAPH_TYPES, default=DEFAULT_GRAPH)
 parser.add_argument('--lm', type=str, default='transformer')
 parser.add_argument('--hidden_channels', type=int, default=512)
 parser.add_argument('--lr', type=float, default=1e-3)
-parser.add_argument('--epochs', type=int, default=500)
+parser.add_argument('--epochs', type=int, default=50)
 parser.add_argument('--glob', action='store_true')
 args = parser.parse_args()
 
@@ -33,9 +33,13 @@ checkpoint_path = CHECKPOINTS_DIR + f'{args.graphs}_{args.lm}_features_hidden_ch
 if args.lm == 'transformer':
     lm = load_transformer_weights(family='general')
     lm_ab = load_transformer_weights(family='antibody', cssp=False)
-    train_loader, test_loader, test_size, dataset = get_dataloaders(checkpoint_path, device, lm_ab=lm_ab, lm_ag=lm)
+    train_loader, test_loader, test_size, dataset = get_dataloaders(
+        checkpoint_path, device, lm_ab=lm_ab, lm_ag=lm, graph_type=args.graphs
+    )
 else:
-    train_loader, test_loader, test_size, _ = get_dataloaders(checkpoint_path, device)
+    train_loader, test_loader, test_size, _ = get_dataloaders(
+        checkpoint_path, device, graph_type=args.graphs
+    )
 model = torch.load(checkpoint_path+f'model_{args.graphs}.pth', map_location=device)
 optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
 

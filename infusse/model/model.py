@@ -59,9 +59,10 @@ class GCN(torch.nn.Module):
 
     def forward(self, x, x_out, edge_index, edge_weight=None, c=None):#, len_ab=None, len_ag=0):
         #batch_size = len(len_ag)
-        if self.lm_dim != 1024:
+        if x_out is None:
             x = self.lm(x)[0]
             x = (self.aa_linear(x) + self.lm_linear(x)).relu()
+            x_seq = self.sequence_linear(x)
         else:
             #print(x.shape)
             #mask = x > 4

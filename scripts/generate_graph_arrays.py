@@ -7,10 +7,10 @@ import torch
 
 from torch_geometric.utils.convert import from_scipy_sparse_matrix
 
-from infusse.config import ADJACENCIES_DIR, CM_DIR, DATA_DIR
+from infusse.config import ADJACENCIES_DIR, CM_DIR, DATA_DIR, DEFAULT_GRAPH, EDGE_DATA_FILES, GRAPH_TYPES, WGNM_DIR
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--graphs', type=str, default='gnm')
+parser.add_argument('--graphs', choices=GRAPH_TYPES, default=DEFAULT_GRAPH)
 parser.add_argument('--force_unweighted', action='store_true')
 args = parser.parse_args()
 
@@ -47,4 +47,7 @@ for i, pdb in enumerate(pdb_codes):
         print(adjacency.toarray().shape[0])
     ei_list.append(edge_index)
     ea_list.append(edge_attr)
-torch.save({'edge_index': ei_list, 'edge_attr': ea_list}, directory+'edge_data.pt')
+torch.save(
+    {'edge_index': ei_list, 'edge_attr': ea_list},
+    directory + EDGE_DATA_FILES[args.graphs],
+)

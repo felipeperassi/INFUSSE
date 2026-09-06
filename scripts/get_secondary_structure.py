@@ -7,16 +7,16 @@ import scipy
 import torch
 import re
 
-from infusse.config import CHECKPOINTS_DIR, DATA_DIR, STRUCTURE_DIR
+from infusse.config import CHECKPOINTS_DIR, DATA_DIR, DEFAULT_GRAPH, GRAPH_TYPES, STRUCTURE_DIR
 from infusse.utils.biology_utils import generate_secondary
 from infusse.utils.torch_utils import get_dataloaders, load_transformer_weights
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--graphs', type=str, default='gnm')
+parser.add_argument('--graphs', choices=GRAPH_TYPES, default=DEFAULT_GRAPH)
 parser.add_argument('--lm', type=str, default='transformer')
 parser.add_argument('--hidden_channels', type=int, default=512)
 parser.add_argument('--lr', type=float, default=1e-3)
-parser.add_argument('--epochs', type=int, default=500)
+parser.add_argument('--epochs', type=int, default=50)
 args = parser.parse_args()
 
 if torch.cuda.is_available():
@@ -31,7 +31,13 @@ checkpoint_path = CHECKPOINTS_DIR + f'{args.graphs}_{args.lm}_features_hidden_ch
 
 lm = load_transformer_weights(family='general')
 lm_ab = load_transformer_weights(family='antibody', cssp=False)
-train_loader, test_loader, test_size, dataset = get_dataloaders(checkpoint_path, device=device, lm_ab=lm_ab, lm_ag=lm)
+train_loader, test_loader, test_size, dataset = get_dataloaders(
+    checkpoint_path,
+    device=device,
+    lm_ab=lm_ab,
+    lm_ag=lm,
+    graph_type=args.graphs,
+)
 
 for j, loader in enumerate(test_loader):
     path = os.path.join(STRUCTURE_DIR, loader.pdb[0]+'.pdb')
