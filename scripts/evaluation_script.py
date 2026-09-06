@@ -13,8 +13,12 @@ from torch_geometric.logging import log
 from infusse.config import CHECKPOINTS_DIR, DATA_DIR, DEFAULT_GRAPH, GRAPH_TYPES
 from infusse.dataset.dataset import GCNBfDataset
 from infusse.model.model import GCN
+from infusse.utils.torch_utils import get_dataloaders, load_transformer_weights, test
 from infusse.utils.biology_utils import get_transformer_tokenizer
-from infusse.utils.torch_utils import get_dataloaders, load_legacy_model, load_transformer_weights, test
+from infusse.utils.perturbations import (drop_edges, off_diagonal_add_gn, off_diagonal_addmult_gn, off_diagonal_mult_gn, remove_off_diagonal,
+                                            test_perturb, identity, drop_off_diagonal, weight_gn,
+                                            distance_gn, off_diagonal_distance_gn, off_diagonal_add_renorm,
+                                            off_diagonal_shuffle, off_diagonal_constant)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--graphs', choices=GRAPH_TYPES, default=DEFAULT_GRAPH)
@@ -144,10 +148,12 @@ start = time.time()
 test_loss, f1 = test(model, test_loader, test_size)
 #tmp_test_acc, corr = test(model, test_loader, test_size)
 # print(dataset[66])
+
 # tmp_test_acc, corr = test(model, dataset[76], 1) #1mlb 66, 1mlc 76
-log(F1=f1, Test_Loss=test_loss)
-eval_time = time.time() - start
-print(f'Median time for evaluation: {eval_time:.4f}s')
+# log(F1=f1, Test_Loss=test_loss)
+# eval_time = time.time() - start
+# print(f'Median time for evaluation: {eval_time:.4f}s')
+
 #  for evaluation: {eval_time:.4f}s')
 #  for evaluation: {eval_time:.4f}s')
 #  for evaluation: {eval_time:.4f}s')
@@ -155,3 +161,51 @@ print(f'Median time for evaluation: {eval_time:.4f}s')
 #  for evaluation: {eval_time:.4f}s')
 #  for evaluation: {eval_time:.4f}s')
 # me for evaluation: {eval_time:.4f}s')
+
+
+# print('=== no perturbations ===')
+
+# test_perturb(model, test_loader, test_size, identity)
+
+# print('\n=== Epitope prediction robustness ===')
+
+# print('\n--- off_diagonal_add_gn ---')
+# for sigma in sigmas:
+#     print(f'-- sigma = {sigma}')
+#     test_perturb(model, test_loader, test_size, off_diagonal_add_gn, sigma=sigma)
+
+# print('\n--- off_diagonal_mult_gn ---')
+# for sigma in sigmas:
+#     print(f'-- sigma = {sigma}')
+#     test_perturb(model, test_loader, test_size, off_diagonal_mult_gn, sigma=sigma)
+
+# print('\n--- off_diagonal_addmult_gn ---')
+# for sigma_add in sigmas:
+#     for sigma_mult in sigmas:
+#         print(f'-- sigma_add = {sigma_add}, sigma_mult = {sigma_mult}')
+#         test_perturb(model, test_loader, test_size, off_diagonal_addmult_gn, sigma_add=sigma_add, sigma_mult=sigma_mult)
+
+# print('\n--- off_diagonal_add_gn ---')
+# for sigma in sigmas:
+#     print(f'-- sigma = {sigma}')
+#     test_perturb(model, test_loader, test_size, off_diagonal_add_gn, sigma=sigma)
+
+# print('\n--- drop_off_diagonal ---')
+# for p in probs:
+#     print(f'-- p = {p}')
+#     test_perturb(model, test_loader, test_size, drop_off_diagonal, p=p)
+
+# print('\n--- remove_off_diagonal ---')
+# test_perturb(model, test_loader, test_size, remove_off_diagonal)
+
+# print('\n=== General structure robustness ===')
+
+# print('\n--- weight_gn ---')
+# for sigma in sigmas:
+#     print(f'-- sigma = {sigma}')
+#     test_perturb(model, test_loader, test_size, weight_gn, sigma=sigma)
+
+# print('\n--- drop_edges ---')
+# for p in probs:
+#     print(f'-- p = {p}')
+#     test_perturb(model, test_loader, test_size, drop_edges, p=p)

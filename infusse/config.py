@@ -18,3 +18,6 @@ EDGE_DATA_FILES = {
     'gnm': 'edge_data_gnm.pt',
     'bagpype': 'edge_data_bagpype.pt',
 }
+
+VAL_SEED = 0
+SEED = 0
