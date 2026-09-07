@@ -128,14 +128,14 @@ with open(log_file_path, 'a') as log_file:
         start = time.time()
         loss = train(model, optimiser, train_loader, len(train_loader.dataset))
         if args.skip_epoch_test:
-            tmp_test_acc, corr = np.nan, np.nan
+            tmp_test_acc, f1 = np.nan, np.nan
         else:
-            tmp_test_acc, corr = test(model, test_loader, test_size)
-        log_file.write(f'Epoch: {epoch}, Loss: {loss:.4f}, Corr: {corr:.4f}, Test Accuracy: {tmp_test_acc:.4f}, Time: {time.time() - start:.2f}s\n')
+            tmp_test_acc, f1 = test(model, test_loader, test_size)
+        log_file.write(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {f1:.4f}, Test Accuracy: {tmp_test_acc:.4f}, Time: {time.time() - start:.2f}s\n')
         if args.skip_epoch_test:
             log(Epoch=epoch, Loss=loss)
         else:
-            log(Epoch=epoch, Loss=loss, Corr=corr, Test=tmp_test_acc)
+            log(Epoch=epoch, Loss=loss, F1=f1, Test=tmp_test_acc)
         times.append(time.time() - start)
 print(f'Median time per epoch: {np.median(times):.4f}s')
 

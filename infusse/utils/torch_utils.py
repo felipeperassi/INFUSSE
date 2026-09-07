@@ -83,7 +83,7 @@ def get_dataloaders(
     edge_indices = edge_data['edge_index']
     edge_attributes = edge_data['edge_attr']
     X = torch.load(path+input_file)
-    Y = torch.load(path+'b_factors.pt')
+    Y = torch.load(path+'ab_ag_labels.pt')
     C = torch.load(path+'chain_inputs.pt')
     pdb_codes = np.load(path+'pdb_codes.npy')
     chain_sequences = chain_token_sequences(X, C, special_token_ids=special_token_ids)
@@ -229,7 +229,7 @@ def prepare_data_directory(
     output_dir.mkdir(parents=True, exist_ok=True)
     input_files = ['gcn_inputs.pt'] if input_files is None else input_files
     file_names = [
-        'b_factors.pt', 'chain_inputs.pt', 'pdb_codes.npy', 'sequences.pt', *input_files
+        'ab_ag_labels.pt', 'chain_inputs.pt', 'pdb_codes.npy', 'sequences.pt', *input_files
     ]
     for name in file_names:
         destination = output_dir / name
