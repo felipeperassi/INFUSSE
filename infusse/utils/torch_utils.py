@@ -164,6 +164,10 @@ def get_dataloaders(
                 train_indices.remove(test_idx)
         split_path = test_indices_file or path+'test_indices.npy'
         np.save(split_path, np.asarray(test_indices, dtype=int))
+        if len(test_indices) < test_size:
+            print(f'WARNING: only {len(test_indices)}/{test_size} complexes passed the '
+                  f'{identity_cutoff} identity filter.')
+
     print(f'Created a valid split, i.e., less than {identity_cutoff} training/test sequence identity.')
     if train_indices_file:
         train_indices = np.load(train_indices_file)
@@ -377,13 +381,16 @@ def plot_performance(model, loader, ca_index, cdr_positions, glob=False, res_dic
 #     return float(test_loss), float(corr)
 
 @torch.no_grad()
-def test(model, test_loader, test_size):
+def test(model, test_loader, test_size, perturb=None, return_details=False):
     model.eval()
     test_loss = 0.0
-    all_preds = []
+    all_preds = []  
     all_labels = []
     for loader in test_loader:
-        pred = model(loader.x, loader.x_out, loader.edge_index, loader.edge_attr, loader.c)[0]
+        edge_index, edge_attr = loader.edge_index, loader.edge_attr
+        if perturb is not None:
+            edge_index, edge_attr = perturb(edge_index, edge_attr, loader.c)
+        pred = model(loader.x, loader.x_out, edge_index, edge_attr, loader.c)[0]
         ag_mask = (loader.c.long() == 2)
         loss = torch.nn.BCEWithLogitsLoss()(torch.squeeze(pred)[ag_mask], torch.squeeze(loader.y)[ag_mask])
         test_loss += loader.num_graphs * loss.item() / test_size
@@ -409,14 +416,20 @@ def test(model, test_loader, test_size):
 
     print(f'  Acc: {accuracy:.4f}, Prec: {precision:.4f}, Rec: {recall:.4f}, F1: {f1:.4f}, MCC: {mcc:.4f}')
 
+    if return_details:
+        return float(test_loss), float(f1), all_preds.cpu(), all_labels.cpu()
+    
     return float(test_loss), float(f1)
 
-def train(model, optimiser, train_loader, train_size, initial_weights=None):
+def train(model, optimiser, train_loader, train_size, initial_weights=None, perturb=None, pos_weight=5.0):
     model.train()
     tr_loss = 0.0
     for loader in train_loader:
         optimiser.zero_grad()
-        out, struct_out = model(loader.x, loader.x_out, loader.edge_index, loader.edge_attr, loader.c)#, loader.len_ab, loader.len_ag)
+        edge_index, edge_attr = loader.edge_index, loader.edge_attr
+        if perturb is not None:
+            edge_index, edge_attr = perturb(edge_index, edge_attr, loader.c)
+        out, struct_out = model(loader.x, loader.x_out, edge_index, edge_attr, loader.c)
         ag_mask = (loader.c.long() == 2)
         penalty_loss = 0.0
         if initial_weights:
@@ -424,7 +437,7 @@ def train(model, optimiser, train_loader, train_size, initial_weights=None):
                 if param.requires_grad and 'sequence_linear' in name:
                     penalty_loss += torch.sum((param - initial_weights[name]) ** 2)
         # loss = torch.nn.MSELoss(reduction='mean')(torch.squeeze(out), torch.squeeze(loader.y)) #+ 0.01 * penalty_loss #+ 0.01 * torch.sum(struct_out ** 2)
-        loss = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([5.0], device=out.device))(torch.squeeze(out)[ag_mask], torch.squeeze(loader.y)[ag_mask])
+        loss = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=out.device))(torch.squeeze(out)[ag_mask], torch.squeeze(loader.y)[ag_mask])
         tr_loss += loader.num_graphs * loss.item() / train_size 
         loss.backward()
         optimiser.step()
