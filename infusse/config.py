@@ -18,3 +18,11 @@ EDGE_DATA_FILES = {
     'gnm': 'edge_data_gnm.pt',
     'bagpype': 'edge_data_bagpype.pt',
 }
+
+DEFAULT_ENCODER = 'esmif1'
+ENCODER_TYPES = ('esmif1',)
+STRUCTURE_EMBEDDING_FILES = {
+    'esmif1': 'embeddings_esmif1.pt',
+}
+STRUCTURE_EMBEDDING_KEYS = ('ag_alone', 'ag_in_complex', 'ab_alone', 'ag_ab')
+DEFAULT_STRUCTURE_KEY = 'ag_alone'

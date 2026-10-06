@@ -12,7 +12,7 @@ from torch_geometric.loader import DataLoader
 from torch.utils.data import random_split
 from transformers import BertModel, RoFormerModel, T5EncoderModel
 
-from infusse.dataset.dataset import GCNBfDataset
+from infusse.dataset.epitope_dataset import GCNBfDataset
 from infusse.utils.biology_utils import antibody_sequence_identity, sort_keys
 
 from infusse.config import DATA_DIR, DEFAULT_GRAPH, EDGE_DATA_FILES
@@ -377,7 +377,7 @@ def plot_performance(model, loader, ca_index, cdr_positions, glob=False, res_dic
 #     return float(test_loss), float(corr)
 
 @torch.no_grad()
-def test(model, test_loader, test_size):
+def test(model, test_loader, test_size, return_details=False):
     model.eval()
     test_loss = 0.0
     all_preds = []
@@ -409,9 +409,12 @@ def test(model, test_loader, test_size):
 
     print(f'  Acc: {accuracy:.4f}, Prec: {precision:.4f}, Rec: {recall:.4f}, F1: {f1:.4f}, MCC: {mcc:.4f}')
 
+    if return_details:
+        return float(test_loss), float(f1), all_preds.cpu(), all_labels.cpu()
+
     return float(test_loss), float(f1)
 
-def train(model, optimiser, train_loader, train_size, initial_weights=None):
+def train(model, optimiser, train_loader, train_size, initial_weights=None, pos_weight=5.0):
     model.train()
     tr_loss = 0.0
     for loader in train_loader:
@@ -424,7 +427,8 @@ def train(model, optimiser, train_loader, train_size, initial_weights=None):
                 if param.requires_grad and 'sequence_linear' in name:
                     penalty_loss += torch.sum((param - initial_weights[name]) ** 2)
         # loss = torch.nn.MSELoss(reduction='mean')(torch.squeeze(out), torch.squeeze(loader.y)) #+ 0.01 * penalty_loss #+ 0.01 * torch.sum(struct_out ** 2)
-        loss = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([5.0], device=out.device))(torch.squeeze(out)[ag_mask], torch.squeeze(loader.y)[ag_mask])
+        
+        loss = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=out.device))(torch.squeeze(out)[ag_mask], torch.squeeze(loader.y)[ag_mask])
         tr_loss += loader.num_graphs * loss.item() / train_size 
         loss.backward()
         optimiser.step()

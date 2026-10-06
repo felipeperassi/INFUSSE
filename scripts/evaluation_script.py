@@ -11,8 +11,8 @@ import torch
 from torch_geometric.logging import log
 
 from infusse.config import CHECKPOINTS_DIR, DATA_DIR, DEFAULT_GRAPH, GRAPH_TYPES
-from infusse.dataset.dataset import GCNBfDataset
-from infusse.model.model import GCN
+from infusse.dataset.epitope_dataset import GCNBfDataset
+from infusse.model.epitope_model import GCN
 from infusse.utils.biology_utils import get_transformer_tokenizer
 from infusse.utils.torch_utils import get_dataloaders, load_legacy_model, load_transformer_weights, test
 
@@ -21,7 +21,7 @@ parser.add_argument('--graphs', choices=GRAPH_TYPES, default=DEFAULT_GRAPH)
 parser.add_argument('--lm', type=str, default='transformer')
 parser.add_argument('--hidden_channels', type=int, default=512)
 parser.add_argument('--lr', type=float, default=1e-3)
-parser.add_argument('--epochs', type=int, default=50)
+parser.add_argument('--epochs', type=int, default=40)
 parser.add_argument('--plm', choices=['protbert', 'antiberta2', 'ankh'], default='protbert')
 parser.add_argument('--evaluate_test_set', action='store_true')
 parser.add_argument('--dump_predictions', action='store_true')

@@ -8,8 +8,8 @@ import os
 from torch_geometric.logging import log
 
 from infusse.config import CHECKPOINTS_DIR, DATA_DIR, DEFAULT_GRAPH, GRAPH_TYPES, STRUCTURE_DIR
-from infusse.dataset.dataset import GCNBfDataset
-from infusse.model.model import GCN
+from infusse.dataset.epitope_dataset import GCNBfDataset
+from infusse.model.epitope_model import GCN
 from infusse.utils.biology_utils import extract_list_of_residues, find_cdr_positions
 from infusse.utils.torch_utils import count_parameters, get_dataloaders, plot_performance, load_transformer_weights, test, train
 

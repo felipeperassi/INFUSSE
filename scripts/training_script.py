@@ -6,12 +6,13 @@ import os
 from pathlib import Path
 import time
 import torch
+import csv
 
 from torch_geometric.logging import log
 
 from infusse.config import CHECKPOINTS_DIR, DATA_DIR, DEFAULT_GRAPH, GRAPH_TYPES
-from infusse.dataset.dataset import GCNBfDataset
-from infusse.model.model import GCN
+from infusse.dataset.epitope_dataset import GCNBfDataset
+from infusse.model.epitope_model import GCN
 from infusse.utils.biology_utils import get_transformer_tokenizer
 from infusse.utils.torch_utils import count_parameters, get_dataloaders, load_lstm_weights, load_transformer_weights, test, train
 
@@ -20,8 +21,8 @@ parser.add_argument('--graphs', choices=GRAPH_TYPES, default=DEFAULT_GRAPH)
 parser.add_argument('--lm', type=str, default='transformer')
 parser.add_argument('--hidden_channels', type=int, default=256)
 parser.add_argument('--lr', type=float, default=1e-3)
-parser.add_argument('--epochs', type=int, default=50)
-parser.add_argument('--seq_only', type=bool, default=False)
+parser.add_argument('--epochs', type=int, default=40)
+parser.add_argument('--seq_only', action='store_true', default=False)
 parser.add_argument('--identity_cutoff', type=float, default=0.9)
 parser.add_argument('--split_seed', type=int, default=0)
 parser.add_argument('--test_indices_file', type=str, default=None)
@@ -32,11 +33,20 @@ parser.add_argument('--lightweight_checkpoint', action='store_true')
 parser.add_argument('--skip_epoch_test', action='store_true')
 parser.add_argument('--mmap_edges', action='store_true')
 parser.add_argument('--embedding_file', type=Path, default=None)
+parser.add_argument('--seed', type=int, default=0)
 args = parser.parse_args()
 
 if args.three_way and not (args.train_indices_file and args.test_indices_file):
     parser.error('--three_way requires --train_indices_file and --test_indices_file.')
 
+results_folder_name = 'results'
+run_name = ''
+if args.seq_only:
+    run_name = 'seq_only'
+run_name += f'_seed{args.seed}'
+
+run_dir = os.path.join(CHECKPOINTS_DIR, results_folder_name, run_name)
+os.makedirs(run_dir, exist_ok=True)
 
 def save_model(model, path):
     if not args.lightweight_checkpoint:
@@ -53,7 +63,7 @@ def save_model(model, path):
         'plm': args.plm,
     }, path)
 
-log_file_path = os.path.join('..', 'log_.txt')
+log_file_path = os.path.join(run_dir, 'log_.txt')
 logging.basicConfig(filename=log_file_path, level=logging.INFO, format='%(asctime)s - %(message)s')
 logging.info('Started')
 
@@ -105,6 +115,8 @@ if args.lightweight_checkpoint and args.lm == 'transformer':
     del lm
     gc.collect()
 
+torch.manual_seed(args.seed)
+
 model = GCN(
     in_channels=dataset.num_features,
     hidden_channels=args.hidden_channels,
@@ -123,25 +135,31 @@ logging.info('Training is starting')
 best_val_acc = test_acc = 0
 times = []
 initial_epochs = 10 if args.seq_only else args.epochs
+
+n_epitope = sum(float(torch.squeeze(b.y)[b.c.long() == 2].sum()) for b in train_loader)
+n_ag_total = sum(int((b.c.long() == 2).sum()) for b in train_loader)
+pos_weight = (n_ag_total - n_epitope) / n_epitope
+print(f'pos_weight_epitope = {pos_weight:.3f}  ({int(n_epitope)} pos / {n_ag_total - int(n_epitope)} neg)')
+
 with open(log_file_path, 'a') as log_file:
     for epoch in range(1, initial_epochs + 1):
         start = time.time()
-        loss = train(model, optimiser, train_loader, len(train_loader.dataset))
+        loss = train(model, optimiser, train_loader, len(train_loader.dataset), pos_weight=pos_weight)
         if args.skip_epoch_test:
-            tmp_test_acc, f1 = np.nan, np.nan
+            test_loss, f1 = np.nan, np.nan
         else:
-            tmp_test_acc, f1 = test(model, test_loader, test_size)
-        log_file.write(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {f1:.4f}, Test Accuracy: {tmp_test_acc:.4f}, Time: {time.time() - start:.2f}s\n')
+            test_loss, f1 = test(model, test_loader, test_size)
+        log_file.write(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {f1:.4f}, Test Loss: {test_loss:.4f}, Time: {time.time() - start:.2f}s\n')
         if args.skip_epoch_test:
             log(Epoch=epoch, Loss=loss)
         else:
-            log(Epoch=epoch, Loss=loss, F1=f1, Test=tmp_test_acc)
+            log(Epoch=epoch, Loss=loss, F1=f1, Test_L=test_loss)
         times.append(time.time() - start)
 print(f'Median time per epoch: {np.median(times):.4f}s')
 
 if args.seq_only:
 
-    save_model(model, CHECKPOINTS_DIR+f'model_{args.graphs}_{args.lm}_features_hidden_channels_{args.hidden_channels}_lr_{args.lr}_epochs_10_sequence_only_.pth')
+    save_model(model, os.path.join(run_dir, 'model_seq_only.pth'))
 
     logging.info('GCN-only training is starting')
 
@@ -167,20 +185,20 @@ if args.seq_only:
     times = []
     for epoch in range(1, args.epochs + 1):
         start = time.time()
-        loss = train(full_model, optimiser_full, train_loader, len(train_loader.dataset), initial_weights)
+        loss = train(full_model, optimiser_full, train_loader, len(train_loader.dataset), initial_weights, pos_weight=pos_weight)
         if args.skip_epoch_test:
-            tmp_test_acc, f1 = np.nan, np.nan
+            test_loss, f1 = np.nan, np.nan
         else:
-            tmp_test_acc, f1 = test(full_model, test_loader, test_size)
-        logging.info(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {f1:.4f}, Test Accuracy: {tmp_test_acc:.4f}, Time: {time.time() - start:.2f}s')
+            test_loss, f1 = test(full_model, test_loader, test_size)
+        logging.info(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {f1:.4f}, Test Loss: {test_loss:.4f}, Time: {time.time() - start:.2f}s')
         if args.skip_epoch_test:
             log(Epoch=epoch, Loss=loss)
         else:
-            log(Epoch=epoch, Loss=loss, F1=f1, Test=tmp_test_acc)
+            log(Epoch=epoch, Loss=loss, F1=f1, Test=test_loss)
         times.append(time.time() - start)
 
     print(f'Median time per epoch: {np.median(times):.4f}s')
 
     model = full_model
 
-save_model(model, CHECKPOINTS_DIR+f'model_{args.graphs}_{args.lm}_features_hidden_channels_{args.hidden_channels}_lr_{args.lr}_epochs_{args.epochs}_sequential_{args.seq_only}_.pth')
+save_model(model, os.path.join(run_dir, 'model.pth')) 
