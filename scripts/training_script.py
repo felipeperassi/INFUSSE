@@ -15,6 +15,7 @@ from infusse.dataset.epitope_dataset import GCNBfDataset
 from infusse.model.epitope_model import GCN
 from infusse.utils.biology_utils import get_transformer_tokenizer
 from infusse.utils.torch_utils import count_parameters, get_dataloaders, load_lstm_weights, load_transformer_weights, test, train
+from infusse.utils.metrics import epitope_metrics, save_metrics
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--graphs', choices=GRAPH_TYPES, default=DEFAULT_GRAPH)
@@ -34,6 +35,7 @@ parser.add_argument('--skip_epoch_test', action='store_true')
 parser.add_argument('--mmap_edges', action='store_true')
 parser.add_argument('--embedding_file', type=Path, default=None)
 parser.add_argument('--seed', type=int, default=0)
+
 args = parser.parse_args()
 
 if args.three_way and not (args.train_indices_file and args.test_indices_file):
@@ -132,7 +134,6 @@ print(count_parameters(model))
 print(len(dataset))
 logging.info('Training is starting')
 
-best_val_acc = test_acc = 0
 times = []
 initial_epochs = 10 if args.seq_only else args.epochs
 
@@ -148,12 +149,13 @@ with open(log_file_path, 'a') as log_file:
         if args.skip_epoch_test:
             test_loss, f1 = np.nan, np.nan
         else:
-            test_loss, f1 = test(model, test_loader, test_size)
-        log_file.write(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {f1:.4f}, Test Loss: {test_loss:.4f}, Time: {time.time() - start:.2f}s\n')
+            test_loss, logits, labels = test(model, test_loader, test_size)
+            metrics = epitope_metrics(logits, labels)
+            logging.info(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {metrics["f1"]:.4f}, ' f'MCC: {metrics["mcc"]:.4f}, Test Loss: {test_loss:.4f}, 'f'Time: {time.time() - start:.2f}s')
         if args.skip_epoch_test:
             log(Epoch=epoch, Loss=loss)
         else:
-            log(Epoch=epoch, Loss=loss, F1=f1, Test_L=test_loss)
+            log(Epoch=epoch, Loss=loss, F1=metrics["f1"], MCC=metrics["mcc"], Test_L=test_loss)
         times.append(time.time() - start)
 print(f'Median time per epoch: {np.median(times):.4f}s')
 
@@ -187,14 +189,15 @@ if args.seq_only:
         start = time.time()
         loss = train(full_model, optimiser_full, train_loader, len(train_loader.dataset), initial_weights, pos_weight=pos_weight)
         if args.skip_epoch_test:
-            test_loss, f1 = np.nan, np.nan
+            test_loss, logits, labels = np.nan, np.nan, np.nan
         else:
-            test_loss, f1 = test(full_model, test_loader, test_size)
-        logging.info(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {f1:.4f}, Test Loss: {test_loss:.4f}, Time: {time.time() - start:.2f}s')
+            test_loss, logits, labels = test(full_model, test_loader, test_size)
+            metrics = epitope_metrics(logits, labels)
+            logging.info(f'Epoch: {epoch}, Loss: {loss:.4f}, F1: {metrics["f1"]:.4f}, ' f'MCC: {metrics["mcc"]:.4f}, Test Loss: {test_loss:.4f}, 'f'Time: {time.time() - start:.2f}s')
         if args.skip_epoch_test:
             log(Epoch=epoch, Loss=loss)
         else:
-            log(Epoch=epoch, Loss=loss, F1=f1, Test=test_loss)
+            log(Epoch=epoch, Loss=loss, F1=metrics["f1"], MCC=metrics["mcc"], Test_L=test_loss)
         times.append(time.time() - start)
 
     print(f'Median time per epoch: {np.median(times):.4f}s')
@@ -202,3 +205,10 @@ if args.seq_only:
     model = full_model
 
 save_model(model, os.path.join(run_dir, 'model.pth')) 
+
+# Metrics on test set
+if logits is None or labels is None:
+    test_loss, logits, labels = test(model, test_loader, test_size)
+    
+row = epitope_metrics(logits, labels, run_name, args.epochs, args.lr, pos_weight, len(test_loader.dataset))
+save_metrics(row, logits, labels, run_dir, os.path.join(CHECKPOINTS_DIR, results_folder_name, 'results.csv'))

@@ -14,6 +14,7 @@ from transformers import BertModel, RoFormerModel, T5EncoderModel
 
 from infusse.dataset.epitope_dataset import GCNBfDataset
 from infusse.utils.biology_utils import antibody_sequence_identity, sort_keys
+from infusse.utils.metrics import epitope_metrics
 
 from infusse.config import DATA_DIR, DEFAULT_GRAPH, EDGE_DATA_FILES
 
@@ -390,29 +391,7 @@ def test(model, test_loader, test_size, return_details=False):
         all_preds.append(torch.squeeze(pred)[ag_mask])
         all_labels.append(torch.squeeze(loader.y)[ag_mask])
 
-    all_preds = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
-    pred_binary = (torch.sigmoid(all_preds) > 0.5).float()
-
-    tp = ((pred_binary == 1) & (all_labels == 1)).sum().float()
-    fp = ((pred_binary == 1) & (all_labels == 0)).sum().float()
-    fn = ((pred_binary == 0) & (all_labels == 1)).sum().float()
-    tn = ((pred_binary == 0) & (all_labels == 0)).sum().float()
-
-    accuracy = (tp + tn) / (tp + tn + fp + fn + 1e-8)
-    precision = tp / (tp + fp + 1e-8)
-    recall = tp / (tp + fn + 1e-8)
-    f1 = 2 * precision * recall / (precision + recall + 1e-8)
-    mcc_num = (tp * tn - fp * fn)
-    mcc_den = torch.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn) + 1e-8)
-    mcc = mcc_num / mcc_den
-
-    print(f'  Acc: {accuracy:.4f}, Prec: {precision:.4f}, Rec: {recall:.4f}, F1: {f1:.4f}, MCC: {mcc:.4f}')
-
-    if return_details:
-        return float(test_loss), float(f1), all_preds.cpu(), all_labels.cpu()
-
-    return float(test_loss), float(f1)
+    return float(test_loss), torch.cat(all_preds).cpu(), torch.cat(all_labels).cpu()
 
 def train(model, optimiser, train_loader, train_size, initial_weights=None, pos_weight=5.0):
     model.train()
