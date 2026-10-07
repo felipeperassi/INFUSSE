@@ -41,6 +41,7 @@ args = parser.parse_args()
 if args.three_way and not (args.train_indices_file and args.test_indices_file):
     parser.error('--three_way requires --train_indices_file and --test_indices_file.')
 
+# Name of the folder where results will be saved [IMPORTANT: I change this name in each branch w/diff variants]
 results_folder_name = 'results'
 run_name = ''
 if args.seq_only:
@@ -209,6 +210,6 @@ save_model(model, os.path.join(run_dir, 'model.pth'))
 # Metrics on test set
 if logits is None or labels is None:
     test_loss, logits, labels = test(model, test_loader, test_size)
-    
+
 row = epitope_metrics(logits, labels, run_name, args.epochs, args.lr, pos_weight, len(test_loader.dataset))
 save_metrics(row, logits, labels, run_dir, os.path.join(CHECKPOINTS_DIR, results_folder_name, 'results.csv'))
