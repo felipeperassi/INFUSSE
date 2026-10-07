@@ -148,7 +148,7 @@ with open(log_file_path, 'a') as log_file:
         start = time.time()
         loss = train(model, optimiser, train_loader, len(train_loader.dataset), pos_weight=pos_weight)
         if args.skip_epoch_test:
-            test_loss, f1 = np.nan, np.nan
+            test_loss, logits, labels = np.nan, np.nan, np.nan
         else:
             test_loss, logits, labels = test(model, test_loader, test_size)
             metrics = epitope_metrics(logits, labels)
@@ -160,7 +160,8 @@ with open(log_file_path, 'a') as log_file:
         times.append(time.time() - start)
 print(f'Median time per epoch: {np.median(times):.4f}s')
 
-if args.seq_only:
+if args.seq_only: # seq_only -> 1. Train Seq apart from the model (10 epochs)
+                  #             2. Train the full model (Seq + Graph) (args.epochs epochs)
 
     save_model(model, os.path.join(run_dir, 'model_seq_only.pth'))
 

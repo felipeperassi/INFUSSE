@@ -14,7 +14,6 @@ from transformers import BertModel, RoFormerModel, T5EncoderModel
 
 from infusse.dataset.epitope_dataset import GCNBfDataset
 from infusse.utils.biology_utils import antibody_sequence_identity, sort_keys
-from infusse.utils.metrics import epitope_metrics
 
 from infusse.config import DATA_DIR, DEFAULT_GRAPH, EDGE_DATA_FILES
 
