@@ -864,6 +864,109 @@ def chains_from_pdb(file_path): # Returns lists of Residue objects for hchain, l
 
     return h_chain_heavy_atoms, l_chain_heavy_atoms, ag_heavy_atoms
 
+def cdr_mask_from_pdb(file_path): # Boolean list over the H & L residues (True inside a CDR)
+    h_chain, l_chain, _ = chains_from_pdb(file_path)
+    return ([is_in_cdr(res.seq_number, 'H') for res in h_chain] + [is_in_cdr(res.seq_number, 'L') for res in l_chain])
+
+def chain_ids_from_pdb(file_path): # Returns the chain identifiers for heavy, light and antigen chains
+
+    h_chain = l_chain = ag_chain = ag_chain_2 = ag_chain_3 = None
+
+    with open(file_path, 'r') as pdb_file:
+        for line in pdb_file:
+            if line.find('AGCHAIN') != -1 or line.find('HCHAIN') != -1 or line.find('LCHAIN') != -1:
+                if line[line.find('AGCHAIN')+len('AGCHAIN')+1:line.find('AGCHAIN')+len('AGCHAIN')+5] != 'NONE':
+                    ag_chain = line[line.find('AGCHAIN')+len('AGCHAIN')+1]
+                    if line[line.find('AGCHAIN')+len('AGCHAIN')+2] == ';':
+                        ag_chain_2 = line[line.find('AGCHAIN')+len('AGCHAIN')+3]
+                        if line[line.find('AGCHAIN')+len('AGCHAIN')+4] == ';':
+                            ag_chain_3 = line[line.find('AGCHAIN')+len('AGCHAIN')+5]
+                        else:
+                            ag_chain_3 = None
+                    else:
+                        ag_chain_2 = None
+                        ag_chain_3 = None
+                else:
+                    ag_chain = None
+                    ag_chain_2 = None
+                    ag_chain_3 = None
+                h_chain = line[line.find('HCHAIN')+len('HCHAIN')+1]
+                l_chain = line[line.find('LCHAIN')+len('LCHAIN')+1]
+
+    return h_chain, l_chain, ag_chain, ag_chain_2, ag_chain_3
+
+def backbone_coords_from_pdb(file_path): # Returns lists of backbone (N, CA, C) coordinates (x, y, z) for hchain, lchain & ags heavy atoms
+    amino_acid_dictionary = {
+    'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
+    'GLU': 'E', 'GLN': 'Q', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+    'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
+    'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
+    'ASX': 'B', 'GLX': 'Z', 'SEC': 'U', 'PYL': 'O', 'XAA': 'X',
+    ' ': ' ', 'UNK': '?',
+    }
+    backbone_atoms = ('N', 'CA', 'C')
+    h_chain, l_chain, ag_chain, ag_chain_2, ag_chain_3 = chain_ids_from_pdb(file_path)
+
+    # One list of residues per chain identifier, keyed as they appear in the file
+    residues_per_chain = defaultdict(list)
+    chain_order = {0: [], 1: [], 2: []}
+
+    current_backbone = None
+    current_id = None
+    current_seq_number = None
+    prev_dest = None
+
+    with open(file_path, 'r') as pdb_file:
+        for line in pdb_file:
+            if line.startswith('ATOM'):
+                atom_name = line[12:16].strip()
+                chain_id = line[slice(21, 22)].strip()
+                seq_number = line[slice(22, 27)].strip()
+                residue_name = line[17:20].strip()
+                x, y, z = float(line[slice(30, 38)].strip()), float(line[slice(38, 46)].strip()), float(line[slice(46, 54)].strip())
+
+                if not atom_name.startswith('H'): # Only heavy atoms
+                    # ag case
+                    if (chain_id.upper() in [ag_chain, ag_chain_2, ag_chain_3] and l_chain not in [ag_chain, ag_chain_2, ag_chain_3] and h_chain not in [ag_chain, ag_chain_2, ag_chain_3]) or (chain_id in [ag_chain.lower() if ag_chain is not None else None, ag_chain_2.lower() if ag_chain_2 is not None else None, ag_chain_3.lower() if ag_chain_3 is not None else None] and (l_chain in [ag_chain, ag_chain_2, ag_chain_3] or h_chain in [ag_chain, ag_chain_2, ag_chain_3])):
+                        dest = 2
+
+                    # h_chain case
+                    elif (chain_id == h_chain or (chain_id.upper() == h_chain and h_chain != l_chain and h_chain != ag_chain)):
+                        dest = 0
+
+                    # l_chain case
+                    elif ((l_chain == chain_id.upper() and h_chain != l_chain) or (l_chain.lower() == chain_id and h_chain == l_chain)):
+                        dest = 1
+
+                    else:
+                        continue # Skip atoms that don't belong to any of the chains of interest (errors)
+
+                    if current_id is None or (chain_id, seq_number) != (current_id, current_seq_number): # We find a new res
+                        if current_id is not None: # Not the first res, save the previous before starting the new one
+                            if not np.isnan(current_backbone[1]).any(): # Only save residues with CA location
+                                residues_per_chain[prev_dest, current_id].append(current_backbone)
+
+                        current_backbone = np.full((3, 3), np.nan, dtype=np.float32)
+                        current_id, current_seq_number = chain_id, seq_number
+
+                    if residue_name not in amino_acid_dictionary:
+                        current_id = None
+                        continue
+                    if atom_name in backbone_atoms:
+                        current_backbone[backbone_atoms.index(atom_name)] = (x, y, z)
+                    if (dest, chain_id) not in chain_order[dest]:
+                        chain_order[dest].append((dest, chain_id))
+                    prev_dest = dest
+
+        # Save the last residue after the loop
+        if current_backbone is not None and not np.isnan(current_backbone[1]).any():
+            residues_per_chain[prev_dest, current_id].append(current_backbone)
+
+    return tuple(
+        [np.stack(residues_per_chain[key]) for key in chain_order[dest] if residues_per_chain[key]]
+        for dest in (0, 1, 2)
+    )
+
 def compute_epitope_paratope(h_chain, l_chain, ag, threshold=5.0, compute_paratope=False):     
     ab_matrix_full = np.array([atom_loc for res in h_chain + l_chain for atom_loc in res.heavy_atoms_loc]) # All heavy atoms of the ab (for epitope computation)
     ag_matrix_full = np.array([atom_loc for res in ag for atom_loc in res.heavy_atoms_loc]) # All heavy atoms of the ag (for paratope computation)
