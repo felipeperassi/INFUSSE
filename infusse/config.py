@@ -25,4 +25,4 @@ STRUCTURE_EMBEDDING_FILES = {
     'esmif1': 'embeddings_esmif1.pt',
 }
 STRUCTURE_EMBEDDING_KEYS = ('ag_alone', 'complex', 'ab_alone', 'ag_ab')
-DEFAULT_STRUCTURE_KEY = 'ag_alone'
+DEFAULT_STRUCTURE_KEY = 'ag_ab'

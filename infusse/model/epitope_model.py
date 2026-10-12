@@ -7,104 +7,124 @@ r"""This module contains the model class for epitope prediction.
 """
 
 import torch
-from torch_geometric.nn import GCNConv
 
-from torch_geometric.utils import to_dense_adj, dense_to_sparse, get_laplacian
-import torch.nn.functional as F
-from torch_geometric.nn import MessagePassing
+class SeqStructMerge(torch.nn.Module): # [ proj. seq embedd (hidden_dim) | proj. struct embedd (hidden_dim) ] -> [ merged embedd ] 
+    def __init__(self, seq_dim, struct_dim, hidden_dim, dropout=0.3):
+        super().__init__()
+        self.seq_projection = torch.nn.Sequential(
+            torch.nn.Linear(seq_dim, hidden_dim),
+            torch.nn.LayerNorm(hidden_dim),
+            torch.nn.ReLU()
+        )
+        self.struct_projection = torch.nn.Sequential(
+            torch.nn.Linear(struct_dim, hidden_dim),
+            torch.nn.LayerNorm(hidden_dim),
+            torch.nn.ReLU()
+        )
+        self.merge = torch.nn.Sequential(
+            torch.nn.Linear(2 * hidden_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Linear(hidden_dim, hidden_dim)
+        )
+        # self.merge = torch.nn.Linear(2 * hidden_dim, hidden_dim)
 
-def compute_diffusion_matrix(L, t):
-    eigenvalues, eigenvectors = torch.linalg.eigh(L) 
-    diffusion_matrix = eigenvectors @ torch.diag(torch.exp(-t * eigenvalues)) @ eigenvectors.T
-    return diffusion_matrix
+    def forward(self, seq_embeddings, struct_embeddings):
+        seq_proj = self.seq_projection(seq_embeddings)
+        struct_proj = self.struct_projection(struct_embeddings)
+        return self.merge(torch.cat((seq_proj, struct_proj), dim=-1)) # dim: hidden_dim
 
-class DiffGCNLayer(MessagePassing):
-    def __init__(self, in_channels, out_channels, t_init=1e-3, normalize=True):
-        super().__init__(aggr='add')  
-        self.lin = torch.nn.Linear(in_channels, out_channels, bias=False)
-        self.t = torch.nn.Parameter(torch.tensor(t_init, dtype=torch.float32))  # t is learnt during training
-        self.normalize = normalize  
 
-    def forward(self, x, edge_index, edge_weight=None):
-        if edge_weight is None:
-            edge_weight = torch.ones(edge_index.size(1), device=x.device)
-        laplacian_edge_index, laplacian_edge_weight = get_laplacian(edge_index, edge_weight, normalization='sym' if self.normalize else None, num_nodes=x.size(0))
-        laplacian_dense = to_dense_adj(laplacian_edge_index, edge_attr=laplacian_edge_weight, max_num_nodes=x.size(0))
-        diffusion_matrix = compute_diffusion_matrix(laplacian_dense[0], self.t)
-        x = torch.matmul(diffusion_matrix, x)
-        x = self.lin(x)
+class AgAbAttention(torch.nn.Module): # Q = AG, K = V = AB
+    def __init__(self, hidden_dim, num_heads=4, dropout=0.1):
+        super().__init__()
+        self.attention = torch.nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
+        self.norm = torch.nn.LayerNorm(hidden_dim)
 
-        return x
+    def forward(self, ag_embeddings, ab_embeddings):
+        if ag_embeddings.shape[0] == 0 or ab_embeddings.shape[0] == 0:
+            return ag_embeddings
+        
+        ag_attention, attention_weights = self.attention(ag_embeddings, ab_embeddings, ab_embeddings)
+        return self.norm(ag_embeddings + ag_attention) # dim: 
 
-class GCN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, lm_dim=1024, lm=None, seq_only=False):
+
+class EpitopeModel(torch.nn.Module):
+    def __init__(self, seq_channels, struct_channels, hidden_channels, out_channels, lm_dim=1024, lm=None, 
+                 seq_only=False, struct_only=False, seq_struct_fusion=False, cross_attention=False):
         super().__init__()
         self.lm_dim = lm_dim
         self.lm = lm
         self.seq_only = seq_only
-        self.aa_linear = torch.nn.Linear(in_channels, self.lm_dim, bias=False)
-        self.c_linear = torch.nn.Linear(in_channels, self.lm_dim, bias=False)
+        self.struct_only = struct_only
+        
+        # Sequence block
+        self.aa_linear = torch.nn.Linear(seq_channels, self.lm_dim, bias=False)
+        self.c_linear = torch.nn.Linear(seq_channels, self.lm_dim, bias=False)
         self.lm_linear = torch.nn.Linear(self.lm_dim, self.lm_dim, bias=True)
-        #self.ab_linear = torch.nn.Linear(self.lm_dim, self.lm_dim, bias=True)
-        #self.ag_linear = torch.nn.Linear(self.lm_dim, self.lm_dim, bias=True)
-        #self.sequence_linear_1 = torch.nn.Linear(self.lm_dim, self.lm_dim, bias=True)
-        #self.sequence_linear_2 = torch.nn.Linear(self.lm_dim, out_channels, bias=True)
-        self.sequence_linear = torch.nn.Linear(self.lm_dim, out_channels, bias=True)
-        #self.conv1 = GCNConv(self.lm_dim, hidden_channels, normalize=True)
-        #self.conv2 = GCNConv(hidden_channels, hidden_channels, normalize=True)
-        #self.conv3 = GCNConv(hidden_channels, out_channels, normalize=True)
-        self.conv1 = DiffGCNLayer(self.lm_dim, hidden_channels)
-        #self.conv2 = DiffGCNLayer(hidden_channels, hidden_channels)
-        self.conv3 = DiffGCNLayer(hidden_channels, out_channels)
+        self.seq_out_linear = torch.nn.Linear(self.lm_dim, out_channels, bias=True)
 
-    def forward(self, x, x_out, edge_index, edge_weight=None, c=None):#, len_ab=None, len_ag=0):
-        #batch_size = len(len_ag)
+        # Epitope Graph block
+        self.struct_channels = struct_channels
+        self.seq_struct_fusion = seq_struct_fusion
+        self.cross_attention = cross_attention
+        
+        if self.seq_only:
+            self.ag_fusion = None
+            self.ab_fusion = None
+            self.ag_attention = None
+            self.struct_out_linear = None
+
+        elif self.seq_struct_fusion:
+            self.ag_fusion = SeqStructMerge(self.lm_dim, self.struct_channels, hidden_channels, dropout=0.3)
+            self.ab_fusion = SeqStructMerge(self.lm_dim, self.struct_channels, hidden_channels, dropout=0.3)
+            self.ag_attention = None
+            if self.cross_attention:
+                self.ag_attention = AgAbAttention(hidden_channels, num_heads=8, dropout=0.3)
+            self.struct_out_linear = torch.nn.Linear(hidden_channels, out_channels, bias=True)
+        
+        else:
+            self.ag_fusion = None
+            self.ab_fusion = None
+            self.ag_attention = None
+            self.struct_out_linear = torch.nn.Linear(self.struct_channels, out_channels, bias=True)
+
+    def forward(self, x, x_out, x_struct, c=None, cdr_mask=None):
+        # Sequence block
         if x_out is None:
             x = self.lm(x)[0]
             x = (self.aa_linear(x) + self.lm_linear(x)).relu()
-            x_seq = self.sequence_linear(x)
         else:
-            #print(x.shape)
-            #mask = x > 4
-            #x_out = self.lm(x[None,:].to(torch.int64), output_attentions=False, output_hidden_states=True)['hidden_states'][-1]
-            #x_out = x_out[mask.unsqueeze(-1).expand_as(x_out)].view(x_out.size(0), -1, x_out.size(-1))
-            #x = x[mask].to(torch.float32).unsqueeze(-1)
             x = (self.c_linear(c.unsqueeze(-1)) + self.aa_linear(x.unsqueeze(-1)) + self.lm_linear(x_out)).relu()
-            #x = (torch.cat((self.c_linear(c.unsqueeze(-1)), self.aa_linear(x.unsqueeze(-1)), self.lm_linear(x_out)), dim=-1)).relu()
-            x_seq = self.sequence_linear(x)
+        
+        x_seq_out = self.seq_out_linear(x)
 
-            '''
-            x_processed = []
-            start = 0 
+        # Epitope Graph block
+        if self.seq_only:
+            x_struct_out = torch.zeros_like(x_seq_out)
 
-            for i in range(batch_size):
-                ab_len = len_ab[i]   
-                ag_len = len_ag[i] if len_ag is not None else 0 
-                
-                x_ab = x[start:start + ab_len]
-                x_ab = self.ab_linear(x_ab).relu()  
+        elif self.seq_struct_fusion:
+            ag = (c.long() == 2)
+            ab = ~ag
 
-                if ag_len > 0:
-                    x_ag = x[start + ab_len:start + ab_len + ag_len]
-                    x_ag = self.ag_linear(x_ag).relu()  
-                    x_combined = torch.cat((x_ab, x_ag), dim=0) 
-                else:
-                    x_combined = x_ab  
+            z_ag = self.ag_fusion(x[ag], x_struct[ag])
+            z_ab = self.ab_fusion(x[ab], x_struct[ab])
 
-                x_processed.append(x_combined)
-                
-                start += ab_len + ag_len
+            if self.cross_attention:
+                if cdr_mask is not None:
+                    cdr_mask_ab = cdr_mask[ab]
+                    z_ab = z_ab[cdr_mask_ab]
 
-            x = torch.cat(x_processed, dim=0)
-            '''
-        #x = self.sequence_linear_1(x)
-        #x = self.sequence_linear_2(x)
-        if not self.seq_only:
-            x = self.conv1(x, torch.squeeze(edge_index), torch.squeeze(edge_weight)).relu()
-            #x = self.conv2(x, torch.squeeze(edge_index), torch.squeeze(edge_weight)).relu()
-            x = self.conv3(x, torch.squeeze(edge_index), torch.squeeze(edge_weight)) 
+                z_ag = self.ag_attention(z_ag, z_ab)
+
+            x_struct_out = torch.zeros_like(x_seq_out)
+            x_struct_out[ag] = self.struct_out_linear(z_ag)
+            
         else:
-            x = torch.zeros_like(x_seq, dtype=x_seq.dtype, device=x_seq.device)
-        # x_tot = torch.sigmoid(x + x_seq)
-        x_tot = x + x_seq
-        return x_tot, x
+            x_struct_out = self.struct_out_linear(x_struct)
+            if self.struct_only:
+                x_seq_out = torch.zeros_like(x_struct_out, dtype=x_struct_out.dtype, device=x_struct_out.device)
+            
+
+        x_tot = x_seq_out + x_struct_out
+        return x_tot, x_struct_out, x_seq_out

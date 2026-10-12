@@ -12,10 +12,12 @@ from torch_geometric.loader import DataLoader
 from torch.utils.data import random_split
 from transformers import BertModel, RoFormerModel, T5EncoderModel
 
-from infusse.dataset.epitope_dataset import GCNBfDataset
+from infusse.dataset.dataset import GCNBfDataset
+from infusse.dataset.epitope_dataset import EpitopeModelDataset
+
 from infusse.utils.biology_utils import antibody_sequence_identity, sort_keys
 
-from infusse.config import DATA_DIR, DEFAULT_GRAPH, EDGE_DATA_FILES
+from infusse.config import DEFAULT_STRUCTURE_KEY, STRUCTURE_EMBEDDING_FILES, DEFAULT_GRAPH, EDGE_DATA_FILES
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -58,7 +60,6 @@ def get_dataloaders(
     device,
     mode='test',
     train_size=0.95,
-    lm_ab=None,
     lm_ag=None,
     identity_cutoff=0.9,
     split_seed=0,
@@ -66,9 +67,10 @@ def get_dataloaders(
     train_indices_file=None,
     input_file='gcn_inputs.pt',
     special_token_ids=None,
-    graph_type=DEFAULT_GRAPH,
-    mmap_edges=False,
     embedding_file=None,
+    struct_encoder=None,
+    struct_key=DEFAULT_STRUCTURE_KEY,
+    cdr_mask=False,
 ):
     if mode == 'test':
         shuffle = False
@@ -77,11 +79,6 @@ def get_dataloaders(
         shuffle = True
         batch_size = 1
         
-    edge_file = EDGE_DATA_FILES[graph_type]
-    edge_path = path + edge_file
-    edge_data = torch.load(edge_path, mmap=mmap_edges, map_location='cpu')
-    edge_indices = edge_data['edge_index']
-    edge_attributes = edge_data['edge_attr']
     X = torch.load(path+input_file)
     Y = torch.load(path+'ab_ag_labels.pt')
     C = torch.load(path+'chain_inputs.pt')
@@ -96,18 +93,37 @@ def get_dataloaders(
         embeddings = cached['embeddings']
         print(f'Loaded embeddings from {embedding_file}')
 
-    dataset = GCNBfDataset(
-        edge_indices,
-        edge_attributes,
+    struct_embeddings = None
+    if struct_encoder:
+        struct_path = path + STRUCTURE_EMBEDDING_FILES[struct_encoder]
+        cached = torch.load(struct_path, map_location='cpu')
+        if cached['pdb_codes'] != [str(pdb) for pdb in pdb_codes]:
+            raise ValueError(f'Structure embedding cache does not match {path}pdb_codes.npy.')
+
+        if struct_key == 'ag_ab':
+            struct_embeddings = {'ag': cached['ag_alone'], 'ab': cached['ab_alone']}
+        else:
+            struct_embeddings = cached[struct_key]
+        print(f'Loaded {struct_key} from {struct_path}')
+
+    cdr_masks = None
+    if cdr_mask:
+        cdr_masks = torch.load(path + 'cdr_mask.pt')
+        if len(cdr_masks) != len(pdb_codes):
+            raise ValueError(f'cdr_mask.pt does not match {path}pdb_codes.npy.')
+        print(f'Loaded CDR mask: {sum(int(m.sum()) for m in cdr_masks)} CDR residues')
+
+    dataset = EpitopeModelDataset(
         X,
         Y,
         device=device,
         pdb=pdb_codes,
         C=C,
-        lm_ab=lm_ab,
         lm_ag=lm_ag,
         special_token_ids=special_token_ids,
         embeddings=embeddings,
+        struct_embeddings=struct_embeddings,
+        cdr_masks=cdr_masks,
     )
     if embedding_file and embeddings is None:
         embedding_file.parent.mkdir(parents=True, exist_ok=True)
@@ -383,7 +399,7 @@ def test(model, test_loader, test_size, return_details=False):
     all_preds = []
     all_labels = []
     for loader in test_loader:
-        pred = model(loader.x, loader.x_out, loader.edge_index, loader.edge_attr, loader.c)[0]
+        pred = model(loader.x, loader.x_out, getattr(loader, 'x_struct', None), c=loader.c, cdr_mask=getattr(loader, 'cdr_mask', None))[0]
         ag_mask = (loader.c.long() == 2)
         loss = torch.nn.BCEWithLogitsLoss()(torch.squeeze(pred)[ag_mask], torch.squeeze(loader.y)[ag_mask])
         test_loss += loader.num_graphs * loss.item() / test_size
@@ -397,7 +413,7 @@ def train(model, optimiser, train_loader, train_size, initial_weights=None, pos_
     tr_loss = 0.0
     for loader in train_loader:
         optimiser.zero_grad()
-        out, struct_out = model(loader.x, loader.x_out, loader.edge_index, loader.edge_attr, loader.c)#, loader.len_ab, loader.len_ag)
+        out = model(loader.x, loader.x_out, getattr(loader, 'x_struct', None), c=loader.c, cdr_mask=getattr(loader, 'cdr_mask', None))[0]
         ag_mask = (loader.c.long() == 2)
         penalty_loss = 0.0
         if initial_weights:

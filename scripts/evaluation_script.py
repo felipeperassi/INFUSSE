@@ -11,7 +11,7 @@ import torch
 from torch_geometric.logging import log
 
 from infusse.config import CHECKPOINTS_DIR, DATA_DIR, DEFAULT_GRAPH, GRAPH_TYPES
-from infusse.dataset.epitope_dataset import GCNBfDataset
+from infusse.dataset.epitope_dataset import EpitopeModelDataset
 from infusse.model.epitope_model import GCN
 from infusse.utils.biology_utils import get_transformer_tokenizer
 from infusse.utils.torch_utils import get_dataloaders, load_legacy_model, load_transformer_weights, test
