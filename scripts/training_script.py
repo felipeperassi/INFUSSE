@@ -48,25 +48,11 @@ if args.three_way and not (args.train_indices_file and args.test_indices_file):
 if args.three_way and not (args.train_indices_file and args.test_indices_file):
     parser.error('--three_way requires --train_indices_file and --test_indices_file.')
 
-if args.struct_only and not args.struct_embeddings:
-    parser.error('--struct_only requires --struct_embeddings.')
-
-seq_struct_fusion = args.struct_embeddings and args.struct_key == 'ag_ab'
-
-if args.cross_attention and not seq_struct_fusion:
-    parser.error('--cross_attention requires --struct_embeddings and --struct_key ag_ab.')
-
-if args.cdr_mask and not args.cross_attention:
-    parser.error('--cdr_mask requires --cross_attention.')
-
 # Name of the folder where results will be saved [IMPORTANT: I change this name in each branch w/diff variants]
-results_folder_name = 'esm_results'
+results_folder_name = 'esm_results_attention_v2 (seq-struct in ag-ab mirror)'
 run_name = ''
 if args.struct_embeddings:
-    variant = 'fusion' if seq_struct_fusion else 'struct_only' if args.struct_only else 'probe'
-    run_name = f'{args.encoder}_{args.struct_key}_{variant}'
-    if args.cross_attention:
-        run_name += '_cross_attention'
+    run_name = f'{args.encoder}_{args.struct_key}'
     if args.cdr_mask:
         run_name += '_cdr'
 if args.seq_only:
@@ -85,14 +71,14 @@ def save_model(model, path):
         'state_dict': state,
         'seq_channels': dataset.num_features,
         'struct_channels': dataset.struct_features,
-        'hidden_channels': args.hidden_channels,
+        # 'hidden_channels': args.hidden_channels,
         'out_channels': dataset.out_channels,
         'lm_dim': lm_dim,
         'plm': args.plm,
         'seq_only': model.seq_only,
-        'struct_only': model.struct_only,
-        'seq_struct_fusion': model.seq_struct_fusion,
-        'cross_attention': model.cross_attention,
+        # 'struct_only': model.struct_only,
+        # 'seq_struct_fusion': model.seq_struct_fusion,
+        # 'cross_attention': model.cross_attention,
         'struct_encoder': args.encoder if args.struct_embeddings else None,
         'struct_key': args.struct_key,
         'cdr_mask': args.cdr_mask,
@@ -155,14 +141,14 @@ torch.manual_seed(args.seed)
 model = EpitopeModel(
     seq_channels=dataset.num_features,
     struct_channels=dataset.struct_features,
-    hidden_channels=args.hidden_channels,
+    # hidden_channels=args.hidden_channels,
     out_channels=dataset.out_channels,
     lm_dim=lm_dim,
     lm=model_lm,
     seq_only=args.seq_only,
-    struct_only=args.struct_only,
-    seq_struct_fusion=seq_struct_fusion,
-    cross_attention=args.cross_attention,
+    # struct_only=args.struct_only,
+    # seq_struct_fusion=seq_struct_fusion,
+    # cross_attention=args.cross_attention,
 ).to(device)
 
 optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -197,7 +183,7 @@ with open(log_file_path, 'a') as log_file:
 print(f'Median time per epoch: {np.median(times):.4f}s')
 
 SEQ_BLOCK = ('aa_linear', 'c_linear', 'lm_linear', 'seq_out_linear')
-STRUCT_BLOCK = ('ag_fusion', 'ab_fusion', 'ag_attention', 'struct_out_linear')
+STRUCT_BLOCK = ('seq_struct_ag_ab_att', 'ag_ab_att', 'struct_out_linear')
 
 if args.seq_only: # seq_only -> 1. Train Seq apart from the model (10 epochs)
                   #             2. Train the full model (Seq + Graph) (args.epochs epochs)
@@ -211,14 +197,14 @@ if args.seq_only: # seq_only -> 1. Train Seq apart from the model (10 epochs)
     full_model = EpitopeModel(
         seq_channels=dataset.num_features,
         struct_channels=dataset.struct_features,
-        hidden_channels=args.hidden_channels,
+        # hidden_channels=args.hidden_channels,
         out_channels=dataset.out_channels,
         lm_dim=lm_dim,
         lm=model_lm,
         seq_only=False,
-        struct_only=args.struct_only,
-        seq_struct_fusion=seq_struct_fusion,
-        cross_attention=args.cross_attention,
+        # struct_only=args.struct_only,
+        # seq_struct_fusion=seq_struct_fusion,
+        # cross_attention=args.cross_attention,
     ).to(device)
 
     full_model.load_state_dict(model.state_dict(), strict=False)

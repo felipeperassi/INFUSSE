@@ -34,29 +34,38 @@ class SeqStructMerge(torch.nn.Module): # [ proj. seq embedd (hidden_dim) | proj.
         struct_proj = self.struct_projection(struct_embeddings)
         return self.merge(torch.cat((seq_proj, struct_proj), dim=-1)) # dim: hidden_dim
 
+class SeqStructAttention(torch.nn.Module):
+    def __init__(self, seq_dim, struct_dim, num_heads=4, dropout=0.1):
+        super().__init__()
+        self.attention = torch.nn.MultiheadAttention(embed_dim=struct_dim, kdim=seq_dim, vdim=seq_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
+        self.norm = torch.nn.LayerNorm(struct_dim)
+
+    def forward(self, seq_embeddings, struct_embeddings):
+        if seq_embeddings.shape[0] == 0 or struct_embeddings.shape[0] == 0:
+            return seq_embeddings
+        
+        struct_attention, _ = self.attention(struct_embeddings, seq_embeddings, seq_embeddings, need_weights=False)
+        return self.norm(struct_embeddings + struct_attention) # dim: struct_dim
 
 class AgAbAttention(torch.nn.Module): # Q = AG, K = V = AB
-    def __init__(self, hidden_dim, num_heads=4, dropout=0.1):
+    def __init__(self, struct_dim, num_heads=4, dropout=0.1):
         super().__init__()
-        self.attention = torch.nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
-        self.norm = torch.nn.LayerNorm(hidden_dim)
+        self.attention = torch.nn.MultiheadAttention(embed_dim=struct_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
+        self.norm = torch.nn.LayerNorm(struct_dim)
 
     def forward(self, ag_embeddings, ab_embeddings):
         if ag_embeddings.shape[0] == 0 or ab_embeddings.shape[0] == 0:
             return ag_embeddings
         
-        ag_attention, attention_weights = self.attention(ag_embeddings, ab_embeddings, ab_embeddings)
-        return self.norm(ag_embeddings + ag_attention) # dim: 
-
+        ag_attention, _ = self.attention(ag_embeddings, ab_embeddings, ab_embeddings, need_weights=False)
+        return self.norm(ag_embeddings + ag_attention) # dim: struct_dim
 
 class EpitopeModel(torch.nn.Module):
-    def __init__(self, seq_channels, struct_channels, hidden_channels, out_channels, lm_dim=1024, lm=None, 
-                 seq_only=False, struct_only=False, seq_struct_fusion=False, cross_attention=False):
+    def __init__(self, seq_channels, struct_channels, out_channels, lm_dim=1024, lm=None, seq_only=False):
         super().__init__()
         self.lm_dim = lm_dim
         self.lm = lm
         self.seq_only = seq_only
-        self.struct_only = struct_only
         
         # Sequence block
         self.aa_linear = torch.nn.Linear(seq_channels, self.lm_dim, bias=False)
@@ -66,27 +75,18 @@ class EpitopeModel(torch.nn.Module):
 
         # Epitope Graph block
         self.struct_channels = struct_channels
-        self.seq_struct_fusion = seq_struct_fusion
-        self.cross_attention = cross_attention
         
         if self.seq_only:
-            self.ag_fusion = None
-            self.ab_fusion = None
-            self.ag_attention = None
+            self.seq_struct_ag_att = None
+            self.seq_struct_ab_att = None
+            self.ag_att = None
             self.struct_out_linear = None
 
-        elif self.seq_struct_fusion:
-            self.ag_fusion = SeqStructMerge(self.lm_dim, self.struct_channels, hidden_channels, dropout=0.3)
-            self.ab_fusion = SeqStructMerge(self.lm_dim, self.struct_channels, hidden_channels, dropout=0.3)
-            self.ag_attention = None
-            if self.cross_attention:
-                self.ag_attention = AgAbAttention(hidden_channels, num_heads=8, dropout=0.3)
-            self.struct_out_linear = torch.nn.Linear(hidden_channels, out_channels, bias=True)
-        
-        else:
-            self.ag_fusion = None
-            self.ab_fusion = None
-            self.ag_attention = None
+        else: 
+            self.seq_struct_ag_att = SeqStructAttention(self.lm_dim, self.struct_channels, num_heads=8, dropout=0.3)
+            self.seq_struct_ab_att = SeqStructAttention(self.lm_dim, self.struct_channels, num_heads=8, dropout=0.3)
+
+            self.ag_att = AgAbAttention(self.struct_channels, num_heads=8, dropout=0.3)
             self.struct_out_linear = torch.nn.Linear(self.struct_channels, out_channels, bias=True)
 
     def forward(self, x, x_out, x_struct, c=None, cdr_mask=None):
@@ -103,28 +103,21 @@ class EpitopeModel(torch.nn.Module):
         if self.seq_only:
             x_struct_out = torch.zeros_like(x_seq_out)
 
-        elif self.seq_struct_fusion:
+        else:
             ag = (c.long() == 2)
             ab = ~ag
 
-            z_ag = self.ag_fusion(x[ag], x_struct[ag])
-            z_ab = self.ab_fusion(x[ab], x_struct[ab])
+            z_ag = self.seq_struct_ag_att(x[ag], x_struct[ag])
+            z_ab = self.seq_struct_ab_att(x[ab], x_struct[ab])
 
-            if self.cross_attention:
-                if cdr_mask is not None:
-                    cdr_mask_ab = cdr_mask[ab]
-                    z_ab = z_ab[cdr_mask_ab]
+            if cdr_mask is not None:
+                cdr_mask_ab = cdr_mask[ab]
+                z_ab = z_ab[cdr_mask_ab]
 
-                z_ag = self.ag_attention(z_ag, z_ab)
+            z_ag = self.ag_att(z_ag, z_ab)
 
             x_struct_out = torch.zeros_like(x_seq_out)
             x_struct_out[ag] = self.struct_out_linear(z_ag)
-            
-        else:
-            x_struct_out = self.struct_out_linear(x_struct)
-            if self.struct_only:
-                x_seq_out = torch.zeros_like(x_struct_out, dtype=x_struct_out.dtype, device=x_struct_out.device)
-            
 
         x_tot = x_seq_out + x_struct_out
         return x_tot, x_struct_out, x_seq_out
