@@ -40,10 +40,13 @@ def transformer_embedding(model, tokens, mask, special_token_ids=None):
 
 
 class EpitopeModelDataset(Dataset):
-    def __init__(self, X, Y, device, pdb=None, C=None, lm_ag=None, special_token_ids=None, embeddings=None, struct_embeddings=None, cdr_masks=None):
+    def __init__(self, X, Y, device, pdb=None, C=None, lm_ag=None, special_token_ids=None, embeddings=None, struct_embeddings=None, cdr_masks=None, one_hot=None):
         self.X = []
         self.X_out = []
-        self.num_features = 1
+        if one_hot is None or len(one_hot) != len(X):
+            raise ValueError('One-hot inputs are required for every complex.')
+
+        self.num_features = one_hot[0].shape[1]
         if embeddings is None:
             print('Generating embeddings with Transformer')
         for i, x in enumerate(X):
@@ -57,12 +60,18 @@ class EpitopeModelDataset(Dataset):
                 )
             else:
                 x_out = embeddings[i]
-            x = x[mask].to(torch.float32)
+            x = one_hot[i].to(torch.float32)
+
+            if x.shape != (len(C[i]), self.num_features):
+                raise ValueError(f'One-hot shape mismatch at complex {i}')
+
+            if x_out.shape[0] != x.shape[0]:
+                raise ValueError(f'Embedding and one-hot lengths differ at complex {i}')
             if embeddings is None and ((i + 1) % 100 == 0 or i + 1 == len(X)):
                 print(f'Embedded {i + 1}/{len(X)} complexes')
                 
-            self.X.append(x.to(device).squeeze())
-            self.X_out.append(x_out.to(device).squeeze())
+            self.X.append(x.to(device))
+            self.X_out.append(x_out.to(device))
 
         self.C = [torch.Tensor(c).to(device) for c in C]
         self.Y = [y.to(device).float() for y in Y]

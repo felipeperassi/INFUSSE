@@ -49,12 +49,17 @@ if args.three_way and not (args.train_indices_file and args.test_indices_file):
     parser.error('--three_way requires --train_indices_file and --test_indices_file.')
 
 # Name of the folder where results will be saved [IMPORTANT: I change this name in each branch w/diff variants]
-results_folder_name = 'esm_results_attention_v2 (seq-struct in ag-ab mirror)'
+results_folder_name = 'esm_results_attention_Seq_Block'
 run_name = ''
+
 if args.struct_embeddings:
     run_name = f'{args.encoder}_{args.struct_key}'
     if args.cdr_mask:
         run_name += '_cdr'
+    if args.hidden_channels:
+        run_name += f'_hidden{args.hidden_channels}'
+    if args.lr:
+        run_name += f'_lr{args.lr}'
 if args.seq_only:
     run_name = f'seq_only_{run_name}' if run_name else 'seq_only'
 run_name += f'_seed{args.seed}'
@@ -71,7 +76,7 @@ def save_model(model, path):
         'state_dict': state,
         'seq_channels': dataset.num_features,
         'struct_channels': dataset.struct_features,
-        # 'hidden_channels': args.hidden_channels,
+        'hidden_channels': args.hidden_channels,
         'out_channels': dataset.out_channels,
         'lm_dim': lm_dim,
         'plm': args.plm,
@@ -141,14 +146,11 @@ torch.manual_seed(args.seed)
 model = EpitopeModel(
     seq_channels=dataset.num_features,
     struct_channels=dataset.struct_features,
-    # hidden_channels=args.hidden_channels,
+    hidden_channels=args.hidden_channels,
     out_channels=dataset.out_channels,
     lm_dim=lm_dim,
     lm=model_lm,
     seq_only=args.seq_only,
-    # struct_only=args.struct_only,
-    # seq_struct_fusion=seq_struct_fusion,
-    # cross_attention=args.cross_attention,
 ).to(device)
 
 optimiser = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -182,8 +184,8 @@ with open(log_file_path, 'a') as log_file:
         times.append(time.time() - start)
 print(f'Median time per epoch: {np.median(times):.4f}s')
 
-SEQ_BLOCK = ('aa_linear', 'c_linear', 'lm_linear', 'seq_out_linear')
-STRUCT_BLOCK = ('seq_struct_ag_ab_att', 'ag_ab_att', 'struct_out_linear')
+SEQ_BLOCK = ('aa_linear', 'lm_linear', 'seq_out_linear')
+STRUCT_BLOCK = ('ag_struct_linear', 'ab_struct_linear', 'ag_ab_att', 'seq_struct_att', 'struct_out_linear')
 
 if args.seq_only: # seq_only -> 1. Train Seq apart from the model (10 epochs)
                   #             2. Train the full model (Seq + Graph) (args.epochs epochs)
@@ -197,14 +199,11 @@ if args.seq_only: # seq_only -> 1. Train Seq apart from the model (10 epochs)
     full_model = EpitopeModel(
         seq_channels=dataset.num_features,
         struct_channels=dataset.struct_features,
-        # hidden_channels=args.hidden_channels,
+        hidden_channels=args.hidden_channels,
         out_channels=dataset.out_channels,
         lm_dim=lm_dim,
         lm=model_lm,
         seq_only=False,
-        # struct_only=args.struct_only,
-        # seq_struct_fusion=seq_struct_fusion,
-        # cross_attention=args.cross_attention,
     ).to(device)
 
     full_model.load_state_dict(model.state_dict(), strict=False)

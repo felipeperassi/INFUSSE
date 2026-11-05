@@ -83,6 +83,17 @@ def get_dataloaders(
     Y = torch.load(path+'ab_ag_labels.pt')
     C = torch.load(path+'chain_inputs.pt')
     pdb_codes = np.load(path+'pdb_codes.npy')
+    one_hot_data = torch.load(
+        path + 'gcn_inputs_onehot.pt',
+        map_location='cpu',
+        weights_only=True,
+    )
+
+    if one_hot_data['pdb_codes'] != [str(pdb) for pdb in pdb_codes]:
+        raise ValueError('One-hot inputs do not match the dataset.')
+
+    X_one_hot = one_hot_data['one_hot']
+
     chain_sequences = chain_token_sequences(X, C, special_token_ids=special_token_ids)
     embeddings = None
     embedding_file = Path(embedding_file) if embedding_file else None
@@ -124,6 +135,7 @@ def get_dataloaders(
         embeddings=embeddings,
         struct_embeddings=struct_embeddings,
         cdr_masks=cdr_masks,
+        one_hot=X_one_hot
     )
     if embedding_file and embeddings is None:
         embedding_file.parent.mkdir(parents=True, exist_ok=True)
@@ -400,11 +412,21 @@ def test(model, test_loader, test_size, return_details=False):
     all_labels = []
     for loader in test_loader:
         pred = model(loader.x, loader.x_out, getattr(loader, 'x_struct', None), c=loader.c, cdr_mask=getattr(loader, 'cdr_mask', None))[0]
+        # ag_mask = (loader.c.long() == 2)
+        # loss = torch.nn.BCEWithLogitsLoss()(torch.squeeze(pred)[ag_mask], torch.squeeze(loader.y)[ag_mask])
+        # test_loss += loader.num_graphs * loss.item() / test_size
+        # all_preds.append(torch.squeeze(pred)[ag_mask])
+        # all_labels.append(torch.squeeze(loader.y)[ag_mask])
+        
         ag_mask = (loader.c.long() == 2)
-        loss = torch.nn.BCEWithLogitsLoss()(torch.squeeze(pred)[ag_mask], torch.squeeze(loader.y)[ag_mask])
+        prediction = pred.reshape(-1)
+        target = loader.y.reshape(-1)[ag_mask].float()
+
+        loss = torch.nn.BCEWithLogitsLoss()(prediction, target)
         test_loss += loader.num_graphs * loss.item() / test_size
-        all_preds.append(torch.squeeze(pred)[ag_mask])
-        all_labels.append(torch.squeeze(loader.y)[ag_mask])
+
+        all_preds.append(prediction)
+        all_labels.append(target)
 
     return float(test_loss), torch.cat(all_preds).cpu(), torch.cat(all_labels).cpu()
 
@@ -421,8 +443,15 @@ def train(model, optimiser, train_loader, train_size, initial_weights=None, pos_
                 if param.requires_grad and 'sequence_linear' in name:
                     penalty_loss += torch.sum((param - initial_weights[name]) ** 2)
         # loss = torch.nn.MSELoss(reduction='mean')(torch.squeeze(out), torch.squeeze(loader.y)) #+ 0.01 * penalty_loss #+ 0.01 * torch.sum(struct_out ** 2)
+        # loss = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=out.device))(torch.squeeze(out), torch.squeeze(loader.y))
         
-        loss = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=out.device))(torch.squeeze(out)[ag_mask], torch.squeeze(loader.y)[ag_mask])
+        prediction = out.reshape(-1)
+        target = loader.y.reshape(-1)[ag_mask].float()
+
+        loss = torch.nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([pos_weight], device=out.device)
+        )(prediction, target)
+
         tr_loss += loader.num_graphs * loss.item() / train_size 
         loss.backward()
         optimiser.step()
